@@ -587,21 +587,17 @@ def _detect_deconvolution_window(sample) -> tuple[float, float]:
         if protein_peaks:
             peaks = protein_peaks
 
-    max_peak_int = max(p["intensity"] for p in peaks)
-    sig_peaks = [p for p in peaks if p["intensity"] >= max_peak_int * 0.10]
-    if not sig_peaks:
-        sig_peaks = [max(peaks, key=lambda p: p["intensity"])]
+    # Use the dominant peak only, then tighten boundaries to 45% of its height.
+    # This avoids broad auto-windows from long low-slope tails.
+    dominant_peak = max(peaks, key=lambda p: p["intensity"])
 
-    first_peak = min(sig_peaks, key=lambda p: p["time"])
-    last_peak = max(sig_peaks, key=lambda p: p["time"])
-
-    threshold_left = first_peak["intensity"] * 0.3
-    left_idx = first_peak["index"]
+    threshold_left = dominant_peak["intensity"] * 0.45
+    left_idx = dominant_peak["index"]
     while left_idx > 0 and tic_smoothed[left_idx] > threshold_left:
         left_idx -= 1
 
-    threshold_right = last_peak["intensity"] * 0.3
-    right_idx = last_peak["index"]
+    threshold_right = dominant_peak["intensity"] * 0.45
+    right_idx = dominant_peak["index"]
     while right_idx < len(tic_smoothed) - 1 and tic_smoothed[right_idx] > threshold_right:
         right_idx += 1
 
