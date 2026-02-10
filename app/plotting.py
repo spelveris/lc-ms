@@ -1,6 +1,7 @@
 """Plotting functions for LC-MS data visualization."""
 
 import io
+import textwrap
 from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
@@ -170,7 +171,9 @@ def create_time_progression_figure(
     style: Optional[dict] = None,
     mz_window: float = config.DEFAULT_MZ_WINDOW,
     uv_smoothing: int = config.UV_SMOOTHING_WINDOW,
-    eic_smoothing: int = config.EIC_SMOOTHING_WINDOW
+    eic_smoothing: int = config.EIC_SMOOTHING_WINDOW,
+    metadata_method: Optional[str] = None,
+    metadata_files: Optional[str] = None,
 ) -> matplotlib.figure.Figure:
     """
     Create a multi-panel figure comparing samples across timepoints.
@@ -216,7 +219,34 @@ def create_time_progression_figure(
     n_rows = 2 + n_eics  # UV + TIC + EICs
 
     fig, axes = plt.subplots(n_rows, 1, figsize=(fig_width, fig_height_per_panel * n_rows))
-    fig.suptitle(title, fontsize=10, fontweight='bold', y=1.005)
+    if n_rows == 1:
+        axes = [axes]
+
+    # Keep title close to the first panel.
+    fig.suptitle(title, fontsize=10, fontweight='bold', y=0.978)
+
+    # Render optional metadata inside the figure so exports include it.
+    # Wrap long file lists and place metadata at bottom-left.
+    meta_lines: list[str] = []
+    metadata_font_size = 7
+    left_x = 0.005
+    if metadata_method:
+        meta_lines.append(f"Method: {metadata_method}")
+    if metadata_files:
+        # Use nearly full figure width before wrapping.
+        usable_width_frac = 0.995 - left_x
+        usable_points = fig_width * 72.0 * usable_width_frac
+        avg_char_points = metadata_font_size * 0.56
+        wrap_width = max(140, int(usable_points / max(1.0, avg_char_points)))
+        wrapped = textwrap.wrap(f"Files: {metadata_files}", width=wrap_width)
+        if wrapped:
+            meta_lines.extend(wrapped)
+    metadata_line_step = 0.024
+    if meta_lines:
+        y = 0.008
+        for line in reversed(meta_lines):
+            fig.text(left_x, y, line, ha='left', va='bottom', fontsize=metadata_font_size)
+            y += metadata_line_step
 
     # Define colors based on number of samples
     color_initial = custom_colors.get('initial', config.TIME_COLORS["initial"])
@@ -252,7 +282,7 @@ def create_time_progression_figure(
 
     create_overlay_panel(
         axes[0], uv_traces, colors=colors,
-        xlabel=x_label,
+        xlabel=x_label if 0 == (n_rows - 1) else "",
         ylabel=y_label_uv,
         smoothing=uv_smoothing,
         line_width=line_width,
@@ -269,7 +299,7 @@ def create_time_progression_figure(
 
     create_overlay_panel(
         axes[1], tic_traces, colors=colors,
-        xlabel=x_label,
+        xlabel=x_label if 1 == (n_rows - 1) else "",
         ylabel=y_label_tic,
         smoothing=eic_smoothing,
         line_width=line_width,
@@ -290,7 +320,7 @@ def create_time_progression_figure(
 
         create_overlay_panel(
             axes[2 + j], eic_traces, colors=colors,
-            xlabel=x_label,
+            xlabel=x_label if (2 + j) == (n_rows - 1) else "",
             ylabel=y_label_eic,
             smoothing=eic_smoothing,
             line_width=line_width,
@@ -299,12 +329,25 @@ def create_time_progression_figure(
         )
         axes[2 + j].set_title(panel_title_eic)
 
+    # Show x tick labels only on the bottom panel to avoid inter-panel overlap.
+    for idx, ax in enumerate(axes):
+        if idx < (n_rows - 1):
+            ax.tick_params(axis='x', labelbottom=False)
+
+    # Keep title-to-graph spacing tight while avoiding overlap.
+    top_margin = 0.972
+    bottom_margin = 0.025 + (metadata_line_step * len(meta_lines))
+    bottom_margin = min(0.26, max(0.045, bottom_margin))
+
     try:
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, bottom_margin, 1.0, top_margin))
+        # Keep panel-to-panel spacing stable across reruns to avoid occasional
+        # title/x-label overlap on first render.
+        fig.subplots_adjust(hspace=0.28)
     except Exception:
         # Avoid hard-failing on occasional text-layout parser errors on some
         # desktop environments; keep rendering with explicit spacing.
-        fig.subplots_adjust(top=0.95, hspace=0.45)
+        fig.subplots_adjust(top=top_margin, bottom=bottom_margin, hspace=0.28)
     return fig
 
 
@@ -433,7 +476,9 @@ def create_eic_comparison_figure(
     mz_values: list[float],
     mz_window: float = config.DEFAULT_MZ_WINDOW,
     smoothing: int = config.EIC_SMOOTHING_WINDOW,
-    overlay: bool = True
+    overlay: bool = True,
+    normalize: bool = True,
+    selected_peaks_by_mz: Optional[dict[str, list[dict]]] = None
 ) -> matplotlib.figure.Figure:
     """
     Create a figure comparing multiple EICs from a single sample.
@@ -448,36 +493,143 @@ def create_eic_comparison_figure(
     Returns:
         Matplotlib Figure object
     """
+    title_fs = 19
+    panel_title_fs = 16
+    axis_label_fs = 16
+    tick_fs = 14
+    legend_fs = 14
+    peak_label_fs = 13
+
+    if selected_peaks_by_mz is None:
+        selected_peaks_by_mz = {}
+
     if overlay:
         fig, ax = plt.subplots(figsize=(10, 5))
-        fig.suptitle(f"EIC Comparison: {sample.name}", fontsize=10, fontweight='bold')
+        fig.suptitle(f"EIC Comparison: {sample.name}", fontsize=title_fs, fontweight='bold')
+        global_y_max = 0.0
 
-        eic_traces = []
-        for mz in mz_values:
+        for i, mz in enumerate(mz_values):
             eic = extract_eic(sample, mz, mz_window)
-            if eic is not None and sample.ms_times is not None:
-                eic_traces.append((f"m/z {mz:.2f}", sample.ms_times, eic))
+            if eic is None or sample.ms_times is None:
+                continue
 
-        create_overlay_panel(ax, eic_traces, smoothing=smoothing, normalize=True)
-        ax.set_ylabel("Normalized Intensity")
+            times = sample.ms_times
+            plot_data = smooth_data(eic, smoothing) if smoothing > 0 else eic
+            if normalize and np.max(plot_data) > 0:
+                plot_data = plot_data / np.max(plot_data)
+
+            color = config.EIC_COLORS[i % len(config.EIC_COLORS)]
+            ax.plot(times, plot_data, color=color, linewidth=1.0, label=f"m/z {mz:.2f}")
+            global_y_max = max(global_y_max, float(np.max(plot_data)) if len(plot_data) > 0 else 0.0)
+
+            regions = selected_peaks_by_mz.get(f"{mz:.4f}", [])
+            for region in regions:
+                start = float(region.get("start", times[0]))
+                end = float(region.get("end", times[-1]))
+                number = region.get("number")
+                apex_time = float(region.get("apex_time", (start + end) / 2.0))
+                if end <= start:
+                    continue
+                mask = (times >= start) & (times <= end)
+                if not np.any(mask):
+                    continue
+                ax.fill_between(times[mask], 0, plot_data[mask], color="gray", alpha=0.18, linewidth=0, zorder=0)
+                if number is not None:
+                    local_times = times[mask]
+                    local_data = plot_data[mask]
+                    if len(local_data) > 0:
+                        peak_idx = int(np.argmax(local_data))
+                        label_x = float(local_times[peak_idx])
+                        label_y = float(local_data[peak_idx])
+                    else:
+                        label_x = apex_time
+                        label_y = float(np.interp(apex_time, times, plot_data))
+                    y_offset = 0.03 * max(1.0, global_y_max)
+                    ax.text(label_x, label_y + y_offset, f"P{number}",
+                            ha="center", va="bottom", fontsize=peak_label_fs, color="black")
+
+        ax.set_xlabel("Time (min)", fontsize=axis_label_fs)
+        ax.set_ylabel("Normalized Intensity" if normalize else "Intensity", fontsize=axis_label_fs)
+        ax.tick_params(axis='both', labelsize=tick_fs)
+        ax.legend(loc='upper right', fontsize=legend_fs)
+        if sample.ms_times is not None and len(sample.ms_times) > 0:
+            ax.set_xlim(float(sample.ms_times[0]), float(sample.ms_times[-1]))
+        if global_y_max > 0:
+            # Keep label numbers clearly below the top frame line.
+            y_upper = global_y_max * 1.18
+            if normalize:
+                y_upper = max(1.12, y_upper)
+            ax.set_ylim(0, y_upper)
+        if not normalize:
+            ax.ticklabel_format(axis='y', style='scientific', scilimits=(-2, 3), useMathText=True)
+            _shift_sci_offset_left(ax)
     else:
         n_panels = len(mz_values)
         fig, axes = plt.subplots(n_panels, 1, figsize=(10, 3 * n_panels))
         if n_panels == 1:
             axes = [axes]
 
-        fig.suptitle(f"EIC Comparison: {sample.name}", fontsize=10, fontweight='bold')
+        fig.suptitle(f"EIC Comparison: {sample.name}", fontsize=title_fs, fontweight='bold')
 
         for i, mz in enumerate(mz_values):
             eic = extract_eic(sample, mz, mz_window)
-            create_single_panel(
-                axes[i],
-                sample.ms_times, eic,
-                label=f"m/z {mz:.2f}",
-                color=config.EIC_COLORS[i % len(config.EIC_COLORS)],
-                smoothing=smoothing
-            )
-            axes[i].set_title(f"EIC m/z {mz:.2f} (±{mz_window})")
+            if eic is not None and sample.ms_times is not None:
+                times = sample.ms_times
+                plot_data = smooth_data(eic, smoothing) if smoothing > 0 else eic
+                if normalize and np.max(plot_data) > 0:
+                    plot_data = plot_data / np.max(plot_data)
+
+                axes[i].plot(
+                    times,
+                    plot_data,
+                    color=config.EIC_COLORS[i % len(config.EIC_COLORS)],
+                    linewidth=1.0,
+                    label=f"m/z {mz:.2f}"
+                )
+                axes[i].set_xlabel("Time (min)")
+                axes[i].set_ylabel("Normalized Intensity" if normalize else "Intensity")
+                axes[i].xaxis.label.set_size(axis_label_fs)
+                axes[i].yaxis.label.set_size(axis_label_fs)
+                axes[i].tick_params(axis='both', labelsize=tick_fs)
+                axes[i].legend(loc='upper right', fontsize=legend_fs)
+                axes[i].set_xlim(float(times[0]), float(times[-1]))
+                local_y_max = float(np.max(plot_data)) if len(plot_data) > 0 else 0.0
+                if local_y_max > 0:
+                    # Keep label numbers clearly below the top frame line.
+                    y_upper = local_y_max * 1.18
+                    if normalize:
+                        y_upper = max(1.12, y_upper)
+                    axes[i].set_ylim(0, y_upper)
+                if not normalize:
+                    axes[i].ticklabel_format(axis='y', style='scientific', scilimits=(-2, 3), useMathText=True)
+                    _shift_sci_offset_left(axes[i])
+
+                regions = selected_peaks_by_mz.get(f"{mz:.4f}", [])
+                for region in regions:
+                    start = float(region.get("start", times[0]))
+                    end = float(region.get("end", times[-1]))
+                    number = region.get("number")
+                    apex_time = float(region.get("apex_time", (start + end) / 2.0))
+                    if end <= start:
+                        continue
+                    mask = (times >= start) & (times <= end)
+                    if not np.any(mask):
+                        continue
+                    axes[i].fill_between(times[mask], 0, plot_data[mask], color="gray", alpha=0.22, linewidth=0, zorder=0)
+                    if number is not None:
+                        local_times = times[mask]
+                        local_data = plot_data[mask]
+                        if len(local_data) > 0:
+                            peak_idx = int(np.argmax(local_data))
+                            label_x = float(local_times[peak_idx])
+                            label_y = float(local_data[peak_idx])
+                        else:
+                            label_x = apex_time
+                            label_y = float(np.interp(apex_time, times, plot_data))
+                        y_offset = 0.03 * max(1.0, float(np.max(plot_data)))
+                        axes[i].text(label_x, label_y + y_offset, f"P{number}",
+                                     ha="center", va="bottom", fontsize=peak_label_fs, color="black")
+            axes[i].set_title(f"EIC m/z {mz:.2f} (±{mz_window})", fontsize=panel_title_fs, fontweight='bold')
 
     plt.tight_layout()
     return fig
@@ -630,6 +782,8 @@ def _plot_deconvoluted_masses_panel(
     x_min_da: float = 1000.0,
     x_max_da: float = 50000.0,
     subtitle: Optional[str] = None,
+    show_obs_calc: bool = False,
+    calc_mass_da: Optional[float] = None,
 ) -> None:
     """Render deconvoluted masses as a vertical-line spectrum on the given axis."""
     # Color palette for bars and labels
@@ -665,7 +819,8 @@ def _plot_deconvoluted_masses_panel(
         max_mass = max(masses_kda)
         mass_range = max_mass - min_mass if max_mass > min_mass else max_mass * 0.1
         ax_deconv.set_xlim(x_min_kda, x_max_kda)
-        ax_deconv.set_ylim(0, 120)  # Extra headroom for labels
+        # Relative intensity is normalized to 100%; keep axis at true range.
+        ax_deconv.set_ylim(0, 100)
 
         # Add mass labels with side offsets and collision avoidance so labels
         # don't sit directly on top of bars.
@@ -827,6 +982,38 @@ def _plot_deconvoluted_masses_panel(
                 fontweight='bold'
             )
 
+        # Optional top-peak summary annotation for publication-style figures.
+        # Place it to the right of the most intense peak without touching bars.
+        if show_obs_calc and len(masses_kda) > 0:
+            top_idx = int(np.argmax(norm_intensities))
+            top_x = masses_kda[top_idx]
+            top_y = float(norm_intensities[top_idx])
+            x_span = max(1e-6, (x_max - x_min))
+            ann_x = min(x_max - 0.02 * x_span, top_x + 0.04 * x_span)
+            ann_y = min(108.0, max(24.0, top_y * 0.84))
+
+            annotation_lines: list[tuple[str, str]] = []
+            if calc_mass_da is not None:
+                calc_text = f"{calc_mass_da:.2f}".rstrip("0").rstrip(".")
+                annotation_lines.append((f"calc: {calc_text}", "black"))
+            else:
+                annotation_lines.append(("calc: -", "black"))
+
+            obs_text = f"{masses[top_idx]:.1f}"
+            annotation_lines.append((f"obs: {obs_text}", label_colors[top_idx % len(label_colors)]))
+
+            for i, (txt, color) in enumerate(annotation_lines):
+                ax_deconv.text(
+                    ann_x,
+                    ann_y - i * 8.0,
+                    txt,
+                    ha='left',
+                    va='bottom',
+                    fontsize=8,
+                    fontweight='bold',
+                    color=color,
+                )
+
         ax_deconv.set_xlabel("Mass (kDa)")
         ax_deconv.set_ylabel("Relative Intensity (%)")
         title_y = 1.08 if subtitle else 1.03
@@ -841,6 +1028,9 @@ def _plot_deconvoluted_masses_panel(
 
         if show_grid:
             ax_deconv.grid(True, alpha=0.3)
+        # Publication-style framing: keep only left and bottom axes.
+        ax_deconv.spines['top'].set_visible(False)
+        ax_deconv.spines['right'].set_visible(False)
     else:
         ax_deconv.text(0.5, 0.5, "No masses detected", ha='center', va='center', transform=ax_deconv.transAxes)
         title_y = 1.08 if subtitle else 1.03
@@ -854,6 +1044,8 @@ def _plot_deconvoluted_masses_panel(
             )
         ax_deconv.set_xlim(x_min_kda, x_max_kda)
         ax_deconv.set_ylim(0, 120)
+        ax_deconv.spines['top'].set_visible(False)
+        ax_deconv.spines['right'].set_visible(False)
 
 
 def create_deconvolution_figure(sample, start_time: float, end_time: float,
@@ -880,6 +1072,8 @@ def create_deconvolution_figure(sample, start_time: float, end_time: float,
     show_grid = style.get('show_grid', True)
     deconv_x_min_da = style.get('deconv_x_min_da', 1000.0)
     deconv_x_max_da = style.get('deconv_x_max_da', 50000.0)
+    deconv_show_obs_calc = style.get('deconv_show_obs_calc', False)
+    deconv_calc_mass_da = style.get('deconv_calc_mass_da')
 
     fig = plt.figure(figsize=(fig_width, 5.5))  # Smaller, less zoomed in
 
@@ -959,6 +1153,8 @@ def create_deconvolution_figure(sample, start_time: float, end_time: float,
         show_grid=show_grid,
         x_min_da=deconv_x_min_da,
         x_max_da=deconv_x_max_da,
+        show_obs_calc=deconv_show_obs_calc,
+        calc_mass_da=deconv_calc_mass_da,
     )
 
     plt.suptitle(f"Protein Deconvolution: {sample.name}", fontsize=10, fontweight='bold', y=0.97)
@@ -987,6 +1183,8 @@ def create_deconvoluted_masses_figure(
     show_grid = style.get('show_grid', True)
     deconv_x_min_da = style.get('deconv_x_min_da', 1000.0)
     deconv_x_max_da = style.get('deconv_x_max_da', 50000.0)
+    deconv_show_obs_calc = style.get('deconv_show_obs_calc', False)
+    deconv_calc_mass_da = style.get('deconv_calc_mass_da')
     sample_subtitle = sample_name[:-2] if sample_name.lower().endswith(".d") else sample_name
 
     # Match the physical panel size used by create_deconvolution_figure()
@@ -1015,6 +1213,8 @@ def create_deconvoluted_masses_figure(
         x_min_da=deconv_x_min_da,
         x_max_da=deconv_x_max_da,
         subtitle=sample_subtitle,
+        show_obs_calc=deconv_show_obs_calc,
+        calc_mass_da=deconv_calc_mass_da,
     )
     plt.tight_layout(pad=0.8)
     return fig

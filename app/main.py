@@ -116,6 +116,9 @@ _init_heavy_modules()
 # Now import everything (will be fast since modules are already loaded)
 import numpy as np
 import matplotlib.pyplot as plt
+import csv
+from io import StringIO
+from html import escape
 import zipfile
 import tempfile
 import shutil
@@ -145,11 +148,22 @@ _loading_placeholder.empty()
 # Custom CSS
 st.markdown("""
 <style>
+    :root { --lcms-sidebar-width: 31.5rem; }
     html, body { height: 100%; overflow: auto !important; }
     body { position: relative; }
     div[data-testid="stAppViewContainer"] { height: 100%; overflow: auto !important; }
     div[data-testid="stApp"] { height: 100%; overflow: auto !important; }
     section[data-testid="stSidebar"] { overflow: auto !important; }
+    section[data-testid="stSidebar"] { width: var(--lcms-sidebar-width) !important; }
+    section[data-testid="stSidebar"] > div { width: var(--lcms-sidebar-width) !important; }
+    @media (min-width: 768px) {
+        section[data-testid="stSidebar"][aria-expanded="true"] + div {
+            margin-left: var(--lcms-sidebar-width) !important;
+        }
+        section[data-testid="stSidebar"][aria-expanded="false"] + div {
+            margin-left: 0 !important;
+        }
+    }
     .main .block-container { overflow: visible !important; }
     .stSelectbox label { font-weight: bold; }
     .main .block-container { padding-top: 2rem; }
@@ -467,10 +481,19 @@ def get_folder_contents(path: str) -> tuple[list[dict], list[dict]]:
                             pass
                     else:
                         # Regular subfolder
-                        subfolders.append({
-                            'path': str(item),
-                            'name': name
-                        })
+                        try:
+                            stat = item.stat()
+                            subfolders.append({
+                                'path': str(item),
+                                'name': name,
+                                'date': stat.st_mtime,
+                            })
+                        except (OSError, PermissionError):
+                            subfolders.append({
+                                'path': str(item),
+                                'name': name,
+                                'date': 0.0,
+                            })
             except (OSError, PermissionError):
                 # Skip files/folders we can't access
                 continue
@@ -587,22 +610,31 @@ def _detect_deconvolution_window(sample) -> tuple[float, float]:
         if protein_peaks:
             peaks = protein_peaks
 
-    # Use the dominant peak only, then tighten boundaries to 45% of its height.
+    # Use the dominant peak only, then tighten boundaries to 48% of its height.
     # This avoids broad auto-windows from long low-slope tails.
     dominant_peak = max(peaks, key=lambda p: p["intensity"])
 
-    threshold_left = dominant_peak["intensity"] * 0.45
+    threshold_left = dominant_peak["intensity"] * 0.48
     left_idx = dominant_peak["index"]
     while left_idx > 0 and tic_smoothed[left_idx] > threshold_left:
         left_idx -= 1
 
-    threshold_right = dominant_peak["intensity"] * 0.45
+    threshold_right = dominant_peak["intensity"] * 0.48
     right_idx = dominant_peak["index"]
     while right_idx < len(tic_smoothed) - 1 and tic_smoothed[right_idx] > threshold_right:
         right_idx += 1
 
     auto_start = float(sample.ms_times[left_idx])
     auto_end = float(sample.ms_times[right_idx])
+
+    # Keep default auto window narrow and centered for deconvolution quality.
+    max_window_width = 0.30
+    if auto_end > auto_start and (auto_end - auto_start) > max_window_width:
+        peak_time = float(sample.ms_times[dominant_peak["index"]])
+        half_width = max_window_width / 2.0
+        auto_start = max(min_time, peak_time - half_width)
+        auto_end = min(max_time, peak_time + half_width)
+
     return auto_start, auto_end
 
 
@@ -846,6 +878,52 @@ def render_text_table(rows: list[dict], columns: list[str], max_lines: int = 0) 
         st.code("\n".join(lines), language="text")
 
 
+def render_html_table(rows: list[dict], columns: list[str] | None = None, max_lines: int = 0) -> None:
+    """Render a clean HTML table without pyarrow/pandas dependency."""
+    if not rows:
+        st.info("No results to display.")
+        return
+
+    if columns is None:
+        columns = list(rows[0].keys())
+
+    header_html = "".join(
+        f'<th style="text-align:left; padding:0.45rem 0.6rem; border-bottom:1px solid #666;">{escape(str(col))}</th>'
+        for col in columns
+    )
+
+    body_rows = []
+    for row in rows:
+        cells = "".join(
+            f'<td style="padding:0.40rem 0.6rem; border-bottom:1px solid #3f3f3f;">{escape(str(row.get(col, "")))}</td>'
+            for col in columns
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+
+    table_html = (
+        '<table style="width:100%; border-collapse:collapse; font-size:0.92rem;">'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+    )
+
+    if max_lines > 0 and len(rows) > max_lines:
+        row_height_px = 34
+        header_height_px = 42
+        max_height = header_height_px + max_lines * row_height_px
+        st.markdown(
+            f'<div style="max-height:{max_height}px; overflow:auto; padding:0;">'
+            f"{table_html}</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f'<div style="overflow-x:auto; padding:0;">'
+            f"{table_html}</div>",
+            unsafe_allow_html=True
+        )
+
+
 def get_windows_drives() -> list[str]:
     """Return a list of available Windows drive roots (e.g., C:\\, D:\\)."""
     if os.name != "nt":
@@ -862,14 +940,22 @@ def sidebar_file_browser():
     """Render the interactive file browser in the sidebar."""
 
     current_path = st.session_state.current_path
+    pending_uncheck = st.session_state.pop("_pending_uncheck_paths", [])
+    if isinstance(pending_uncheck, (list, tuple)):
+        for path in pending_uncheck:
+            checkbox_key = f"select_{path}"
+            # Apply queued checkbox resets before widgets are instantiated.
+            if checkbox_key in st.session_state:
+                st.session_state[checkbox_key] = False
 
     def _remove_selected_file(path: str) -> None:
-        """Remove a selected file and keep the matching checkbox unchecked."""
+        """Remove a selected file and queue its checkbox for uncheck on rerun."""
         if path in st.session_state.selected_files:
             st.session_state.selected_files.remove(path)
-        checkbox_key = f"select_{path}"
-        if checkbox_key in st.session_state:
-            st.session_state[checkbox_key] = False
+        queued = st.session_state.get("_pending_uncheck_paths", [])
+        if path not in queued:
+            queued.append(path)
+        st.session_state["_pending_uncheck_paths"] = queued
 
     # Keep browser open while selecting multiple files to avoid collapsing
     # after the first checkbox interaction.
@@ -925,6 +1011,19 @@ def sidebar_file_browser():
         # Show subfolders as clickable buttons
         if subfolders:
             st.caption("Folders")
+            folder_sort_by = st.selectbox(
+                "Sort by",
+                ["Date (Newest)", "Date (Oldest)", "Name (A-Z)", "Name (Z-A)"],
+                key="sort_folders_option"
+            )
+            if folder_sort_by == "Name (A-Z)":
+                subfolders.sort(key=lambda x: x['name'].lower())
+            elif folder_sort_by == "Name (Z-A)":
+                subfolders.sort(key=lambda x: x['name'].lower(), reverse=True)
+            elif folder_sort_by == "Date (Newest)":
+                subfolders.sort(key=lambda x: x.get('date', 0), reverse=True)
+            elif folder_sort_by == "Date (Oldest)":
+                subfolders.sort(key=lambda x: x.get('date', 0))
             for folder in subfolders:
                 if st.button(f"{folder['name']}", key=f"folder_{folder['path']}", use_container_width=True):
                     st.session_state.current_path = folder['path']
@@ -948,19 +1047,24 @@ def sidebar_file_browser():
             elif sort_by == "Date (Oldest)":
                 d_folders.sort(key=lambda x: x['date'])
 
-            # Checkbox for each .D folder
-            for d_folder in d_folders:
-                is_selected = d_folder['path'] in st.session_state.selected_files
-                if st.checkbox(
-                    f"{d_folder['name']}",
-                    value=is_selected,
-                    key=f"select_{d_folder['path']}"
-                ):
-                    if d_folder['path'] not in st.session_state.selected_files:
-                        st.session_state.selected_files.append(d_folder['path'])
-                else:
-                    if d_folder['path'] in st.session_state.selected_files:
-                        st.session_state.selected_files.remove(d_folder['path'])
+            # Keep the selectable file list scrollable (max ~20 visible rows).
+            max_visible_files = 20
+            row_height_px = 34
+            list_height = max(120, min(len(d_folders), max_visible_files) * row_height_px)
+            with st.container(height=list_height):
+                # Checkbox for each .D folder
+                for d_folder in d_folders:
+                    is_selected = d_folder['path'] in st.session_state.selected_files
+                    if st.checkbox(
+                        f"{d_folder['name']}",
+                        value=is_selected,
+                        key=f"select_{d_folder['path']}"
+                    ):
+                        if d_folder['path'] not in st.session_state.selected_files:
+                            st.session_state.selected_files.append(d_folder['path'])
+                    else:
+                        if d_folder['path'] in st.session_state.selected_files:
+                            st.session_state.selected_files.remove(d_folder['path'])
 
         if not subfolders and not d_folders:
             st.info("No folders or .D files found here")
@@ -1456,6 +1560,18 @@ def time_progression_analysis(samples: list, settings):
         'colors': settings['colors'],
         'labels': settings['labels']
     }
+
+    methods = [getattr(s, "acq_method", None) for s in ordered_samples]
+    methods_present = [m for m in methods if m]
+    if methods_present:
+        unique_methods = sorted(set(methods_present))
+        method_text = unique_methods[0] if len(unique_methods) == 1 else ", ".join(unique_methods)
+    else:
+        method_text = "n/a"
+
+    file_names = [s.name[:-2] if s.name.lower().endswith(".d") else s.name for s in ordered_samples]
+    files_text = ", ".join(file_names)
+
     fig = create_time_progression_figure(
         ordered_samples,
         labels,
@@ -1464,7 +1580,9 @@ def time_progression_analysis(samples: list, settings):
         style=style,
         mz_window=settings['mz_window'],
         uv_smoothing=settings['uv_smoothing'],
-        eic_smoothing=settings['eic_smoothing']
+        eic_smoothing=settings['eic_smoothing'],
+        metadata_method=method_text,
+        metadata_files=files_text
     )
 
     # Display
@@ -1497,21 +1615,7 @@ def time_progression_analysis(samples: list, settings):
             mime="application/pdf"
         )
 
-    # Run metadata (compact footer for reporting context)
-    st.caption("Analysis metadata")
-    methods = [getattr(s, "acq_method", None) for s in ordered_samples]
-    methods_present = [m for m in methods if m]
-    if methods_present:
-        unique_methods = sorted(set(methods_present))
-        if len(unique_methods) == 1:
-            st.caption(f"Method: {unique_methods[0]}")
-        else:
-            st.caption("Methods: " + ", ".join(unique_methods))
-    else:
-        st.caption("Method: n/a")
-
-    file_names = [s.name[:-2] if s.name.lower().endswith(".d") else s.name for s in ordered_samples]
-    st.caption("Files: " + ", ".join(file_names))
+    # Metadata is embedded in the exported figure; no duplicate footer needed.
 
 
 def eic_batch_analysis(sample, settings):
@@ -1526,7 +1630,14 @@ def eic_batch_analysis(sample, settings):
         st.warning("No MS data available for this sample")
         return
 
+    if sample.ms_times is None or len(sample.ms_times) == 0:
+        st.warning("No MS time axis available for this sample")
+        return
+
     mz_targets = st.session_state.mz_targets
+    if not mz_targets:
+        st.info("Add at least one target m/z value in sidebar settings.")
+        return
 
     # Display options
     col1, col2 = st.columns(2)
@@ -1535,41 +1646,247 @@ def eic_batch_analysis(sample, settings):
     with col2:
         normalize = st.checkbox("Normalize", value=True)
 
-    # Generate figure
+    st.divider()
+    st.subheader("Peak Integration Selection")
+
+    min_time = float(sample.ms_times[0])
+    max_time = float(sample.ms_times[-1])
+
+    selected_peak_windows: dict[str, list[dict]] = {}
+    peak_data = []
+    per_peak_data = []
+    per_peak_data_by_mz: dict[str, list[dict]] = {}
+
+    def rows_to_csv(rows: list[dict]) -> str:
+        """Serialize list-of-dicts table rows to CSV text."""
+        if not rows:
+            return ""
+        buffer = StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        return buffer.getvalue()
+
+    for mz in mz_targets:
+        eic = extract_eic(sample, mz, settings['mz_window'])
+        if eic is None:
+            continue
+
+        smoothed = smooth_data(eic, settings['eic_smoothing'])
+        total_area = calculate_peak_area(sample.ms_times, smoothed)
+        auto_peaks = find_peaks(sample.ms_times, smoothed)
+
+        # Stable key prefix per sample + target.
+        sample_key = sample.name.replace(" ", "_").replace(".", "_")
+        mz_key = f"{mz:.4f}".replace(".", "_")
+        key_prefix = f"eic_batch_{sample_key}_{mz_key}"
+
+        selected_rows = []
+        selected_windows = []
+        per_mz_rows = []
+        peak_number = 1
+
+        with st.expander(f"m/z {mz:.2f} peak windows", expanded=False):
+            if auto_peaks:
+                st.caption("Auto-detected peaks")
+            else:
+                st.caption("No auto peaks detected. Add manual windows below.")
+
+            for i, peak in enumerate(auto_peaks):
+                use_key = f"{key_prefix}_auto_use_{i}"
+                start_key = f"{key_prefix}_auto_start_{i}"
+                end_key = f"{key_prefix}_auto_end_{i}"
+
+                if use_key not in st.session_state:
+                    st.session_state[use_key] = True
+                if start_key not in st.session_state:
+                    st.session_state[start_key] = float(peak.get('start_time', peak['time']))
+                if end_key not in st.session_state:
+                    st.session_state[end_key] = float(peak.get('end_time', peak['time']))
+
+                cols = st.columns([1.8, 1.6, 1.6, 1.6])
+                with cols[0]:
+                    use_peak = st.checkbox(
+                        f"P{i + 1} auto ({float(peak['time']):.2f} min)",
+                        key=use_key
+                    )
+                with cols[1]:
+                    start_val = st.number_input(
+                        "Start",
+                        min_value=min_time,
+                        max_value=max_time,
+                        key=start_key,
+                        format="%.3f",
+                        label_visibility="collapsed"
+                    )
+                with cols[2]:
+                    end_val = st.number_input(
+                        "End",
+                        min_value=min_time,
+                        max_value=max_time,
+                        key=end_key,
+                        format="%.3f",
+                        label_visibility="collapsed"
+                    )
+
+                start_val = float(start_val)
+                end_val = float(end_val)
+                row_area = calculate_peak_area(sample.ms_times, smoothed, start_val, end_val) if end_val > start_val else 0.0
+                with cols[3]:
+                    st.caption(f"Area: {row_area:.2e}")
+
+                peak_row = {
+                    'm/z': f"{mz:.2f}",
+                    'Peak': f"P{i + 1}",
+                    'Type': "Auto",
+                    'Selected': "Yes" if use_peak else "No",
+                    'Apex (min)': f"{float(peak['time']):.2f}",
+                    'Start (min)': f"{start_val:.3f}",
+                    'End (min)': f"{end_val:.3f}",
+                    'Area': f"{row_area:.2e}",
+                }
+                per_peak_data.append(peak_row)
+                per_mz_rows.append(peak_row)
+
+                if use_peak and end_val > start_val:
+                    selected_rows.append({
+                        "label": f"P{peak_number}",
+                        "apex_time": float(peak['time']),
+                        "start": start_val,
+                        "end": end_val,
+                        "area": row_area
+                    })
+                    selected_windows.append({
+                        "number": peak_number,
+                        "apex_time": float(peak['time']),
+                        "start": start_val,
+                        "end": end_val
+                    })
+                    peak_number += 1
+
+            st.caption("Manual peaks")
+            manual_count_key = f"{key_prefix}_manual_count"
+            if manual_count_key not in st.session_state:
+                st.session_state[manual_count_key] = 0
+
+            manual_count = int(st.number_input(
+                "Additional manual peaks",
+                min_value=0,
+                max_value=10,
+                step=1,
+                key=manual_count_key
+            ))
+
+            for j in range(manual_count):
+                manual_use_key = f"{key_prefix}_manual_use_{j}"
+                manual_start_key = f"{key_prefix}_manual_start_{j}"
+                manual_end_key = f"{key_prefix}_manual_end_{j}"
+
+                if manual_use_key not in st.session_state:
+                    st.session_state[manual_use_key] = True
+                if manual_start_key not in st.session_state:
+                    if auto_peaks:
+                        center = float(auto_peaks[min(j, len(auto_peaks) - 1)]['time'])
+                    else:
+                        center = (min_time + max_time) / 2.0
+                    st.session_state[manual_start_key] = max(min_time, center - 0.04)
+                if manual_end_key not in st.session_state:
+                    if auto_peaks:
+                        center = float(auto_peaks[min(j, len(auto_peaks) - 1)]['time'])
+                    else:
+                        center = (min_time + max_time) / 2.0
+                    st.session_state[manual_end_key] = min(max_time, center + 0.04)
+
+                mcols = st.columns([1.8, 1.6, 1.6, 1.6])
+                with mcols[0]:
+                    use_peak = st.checkbox(
+                        f"M{j + 1} manual",
+                        key=manual_use_key
+                    )
+                with mcols[1]:
+                    start_val = st.number_input(
+                        "Start",
+                        min_value=min_time,
+                        max_value=max_time,
+                        key=manual_start_key,
+                        format="%.3f",
+                        label_visibility="collapsed"
+                    )
+                with mcols[2]:
+                    end_val = st.number_input(
+                        "End",
+                        min_value=min_time,
+                        max_value=max_time,
+                        key=manual_end_key,
+                        format="%.3f",
+                        label_visibility="collapsed"
+                    )
+
+                start_val = float(start_val)
+                end_val = float(end_val)
+                apex_time = (start_val + end_val) / 2.0
+                row_area = calculate_peak_area(sample.ms_times, smoothed, start_val, end_val) if end_val > start_val else 0.0
+                with mcols[3]:
+                    st.caption(f"Area: {row_area:.2e}")
+
+                peak_row = {
+                    'm/z': f"{mz:.2f}",
+                    'Peak': f"M{j + 1}",
+                    'Type': "Manual",
+                    'Selected': "Yes" if use_peak else "No",
+                    'Apex (min)': f"{apex_time:.2f}",
+                    'Start (min)': f"{start_val:.3f}",
+                    'End (min)': f"{end_val:.3f}",
+                    'Area': f"{row_area:.2e}",
+                }
+                per_peak_data.append(peak_row)
+                per_mz_rows.append(peak_row)
+
+                if use_peak and end_val > start_val:
+                    selected_rows.append({
+                        "label": f"P{peak_number}",
+                        "apex_time": apex_time,
+                        "start": start_val,
+                        "end": end_val,
+                        "area": row_area
+                    })
+                    selected_windows.append({
+                        "number": peak_number,
+                        "apex_time": apex_time,
+                        "start": start_val,
+                        "end": end_val
+                    })
+                    peak_number += 1
+
+        selected_peak_windows[f"{mz:.4f}"] = selected_windows
+        per_peak_data_by_mz[f"{mz:.2f}"] = per_mz_rows
+        selected_area = sum(r["area"] for r in selected_rows)
+        main_selected = max(selected_rows, key=lambda x: x["area"]) if selected_rows else None
+        peak_data.append({
+            'm/z': f"{mz:.2f}",
+            'Total Area (full trace)': f"{total_area:.2e}",
+            'Selected Peaks': len(selected_rows),
+            'Selected Area': f"{selected_area:.2e}",
+            'Main Selected Peak': (
+                f"{main_selected['label']} @ {main_selected['apex_time']:.2f} min"
+                if main_selected else "N/A"
+            )
+        })
+
+    # Generate figure with selected integration windows.
     st.divider()
     fig = create_eic_comparison_figure(
         sample,
         mz_targets,
         mz_window=settings['mz_window'],
         smoothing=settings['eic_smoothing'],
-        overlay=overlay
+        overlay=overlay,
+        normalize=normalize,
+        selected_peaks_by_mz=selected_peak_windows
     )
-
     st.pyplot(fig, use_container_width=True)
 
-    # Peak areas table
-    st.subheader("Peak Areas")
-    peak_data = []
-    for mz in mz_targets:
-        eic = extract_eic(sample, mz, settings['mz_window'])
-        if eic is not None and sample.ms_times is not None:
-            smoothed = smooth_data(eic, settings['eic_smoothing'])
-            total_area = calculate_peak_area(sample.ms_times, smoothed)
-            peaks = find_peaks(sample.ms_times, smoothed)
-            main_peak_time = peaks[0]['time'] if peaks else None
-            main_peak_area = peaks[0]['area'] if peaks else None
-
-            peak_data.append({
-                'm/z': f"{mz:.2f}",
-                'Total Area': f"{total_area:.2e}",
-                'Main Peak Time': f"{main_peak_time:.2f} min" if main_peak_time else "N/A",
-                'Main Peak Area': f"{main_peak_area:.2e}" if main_peak_area else "N/A"
-            })
-
-    if peak_data:
-        render_text_table(peak_data, list(peak_data[0].keys()) if peak_data else [])
-
-    # Export buttons
+    # Export buttons directly under graph
     col1, col2, col3 = st.columns(3)
     with col1:
         png_data = export_figure(fig, dpi=settings['export_dpi'])
@@ -1595,6 +1912,43 @@ def eic_batch_analysis(sample, settings):
             file_name=f"{sample.name}_eic_batch.pdf",
             mime="application/pdf"
         )
+
+    # Peak areas table
+    st.subheader("Peak Areas (Summary)")
+    if peak_data:
+        render_html_table(peak_data)
+        summary_csv = rows_to_csv(peak_data)
+        st.download_button(
+            label="Download Summary CSV",
+            data=summary_csv.encode("utf-8"),
+            file_name=f"{sample.name}_eic_peak_summary.csv",
+            mime="text/csv",
+            key=f"eic_summary_csv_{sample.name}"
+        )
+
+    st.subheader("Peak Areas (Per Peak)")
+    if per_peak_data:
+        all_peaks_csv = rows_to_csv(per_peak_data)
+        st.download_button(
+            label="Download All Peaks CSV",
+            data=all_peaks_csv.encode("utf-8"),
+            file_name=f"{sample.name}_eic_peak_areas_all.csv",
+            mime="text/csv",
+            key=f"eic_all_peaks_csv_{sample.name}"
+        )
+
+        for mz_label, rows in per_peak_data_by_mz.items():
+            st.markdown(f"**m/z {mz_label}**")
+            render_html_table(rows, max_lines=20)
+            mz_csv = rows_to_csv(rows)
+            safe_mz = mz_label.replace(".", "_")
+            st.download_button(
+                label=f"Download CSV (m/z {mz_label})",
+                data=mz_csv.encode("utf-8"),
+                file_name=f"{sample.name}_eic_peak_areas_mz_{safe_mz}.csv",
+                mime="text/csv",
+                key=f"eic_peaks_csv_{sample.name}_{safe_mz}"
+            )
 
 
 def deconvolution_analysis(sample, settings):
@@ -1648,46 +2002,8 @@ def deconvolution_analysis(sample, settings):
         st.session_state.deconv_last_autorun_sig = None
 
     if sample.tic is not None:
-        # Find the main peak in TIC
-        from analysis import find_peaks
-        tic_smoothed = smooth_data(sample.tic, 5)
-        peaks = find_peaks(sample.ms_times, tic_smoothed, height_threshold=0.3, prominence=0.1)
-
-        if peaks:
-            # For C4 methods, skip the early injection/void peak (~<1.8 min)
-            # which contains salts and buffer components, not protein.
-            is_c4 = getattr(sample, 'is_c4_method', False)
-            if is_c4:
-                protein_peaks = [p for p in peaks if p['time'] >= 1.8]
-                if protein_peaks:
-                    peaks = protein_peaks
-
-            # Find envelope of ALL significant peaks (>10% of max intensity)
-            # so multi-component samples get a wide enough time range.
-            max_peak_int = max(p['intensity'] for p in peaks)
-            sig_peaks = [p for p in peaks if p['intensity'] >= max_peak_int * 0.10]
-            if not sig_peaks:
-                sig_peaks = [max(peaks, key=lambda p: p['intensity'])]
-
-            # Use the outermost significant peaks to define boundaries
-            first_peak = min(sig_peaks, key=lambda p: p['time'])
-            last_peak = max(sig_peaks, key=lambda p: p['time'])
-
-            # Expand left from earliest peak to 30% of its height
-            threshold_left = first_peak['intensity'] * 0.3
-            left_idx = first_peak['index']
-            while left_idx > 0 and tic_smoothed[left_idx] > threshold_left:
-                left_idx -= 1
-
-            # Expand right from latest peak to 30% of its height
-            threshold_right = last_peak['intensity'] * 0.3
-            right_idx = last_peak['index']
-            while right_idx < len(tic_smoothed) - 1 and tic_smoothed[right_idx] > threshold_right:
-                right_idx += 1
-
-            auto_start = float(sample.ms_times[left_idx])
-            auto_end = float(sample.ms_times[right_idx])
-
+        auto_start, auto_end = _detect_deconvolution_window(sample)
+        if auto_end > auto_start:
             st.session_state.deconv_auto_start = auto_start
             st.session_state.deconv_auto_end = auto_end
 
@@ -1900,6 +2216,20 @@ def deconvolution_analysis(sample, settings):
 
     # Display settings (outside expander for easy access)
     top_n_masses = st.slider("Show top N masses", min_value=1, max_value=20, value=5, key="top_n_masses")
+    show_obs_calc = True
+    st.session_state["deconv_show_obs_calc"] = True
+    calc_mass_da = None
+    calc_mass_text = st.text_input(
+        "Calculated mass (Da, optional)",
+        value=st.session_state.get("deconv_calc_mass_text", ""),
+        key="deconv_calc_mass_text",
+        placeholder="e.g. 27848"
+    )
+    if calc_mass_text.strip():
+        try:
+            calc_mass_da = float(calc_mass_text.strip().replace(",", "."))
+        except ValueError:
+            st.warning("Calculated mass must be numeric (e.g., 27848).")
 
     with st.expander("Deconvolution Parameters", expanded=False):
         col1, col2 = st.columns(2)
@@ -2200,6 +2530,8 @@ def deconvolution_analysis(sample, settings):
             'top_n_masses': top_n_masses,
             'deconv_x_min_da': settings['deconv_x_min_da'],
             'deconv_x_max_da': settings['deconv_x_max_da'],
+            'deconv_show_obs_calc': show_obs_calc,
+            'deconv_calc_mass_da': calc_mass_da,
         }
 
         fig = create_deconvolution_figure(sample, time_range[0], time_range[1], display_results, style)
@@ -2331,7 +2663,16 @@ def batch_deconvolution_analysis(samples: list, settings):
         'top_n_masses': top_n_masses,
         'deconv_x_min_da': settings['deconv_x_min_da'],
         'deconv_x_max_da': settings['deconv_x_max_da'],
+        'deconv_show_obs_calc': True,
+        'deconv_calc_mass_da': None,
     }
+
+    batch_calc_mass_text = st.session_state.get("deconv_calc_mass_text", "")
+    if isinstance(batch_calc_mass_text, str) and batch_calc_mass_text.strip():
+        try:
+            style['deconv_calc_mass_da'] = float(batch_calc_mass_text.strip().replace(",", "."))
+        except ValueError:
+            style['deconv_calc_mass_da'] = None
 
     for idx, sample in enumerate(valid_samples):
         sample_title = sample.name[:-2] if sample.name.lower().endswith(".d") else sample.name
@@ -2593,6 +2934,99 @@ def time_change_mass_spectra_analysis(samples: list, settings):
 
     plt.close(fig)
 
+    # Additional offset view: keep original overlay unchanged and add a
+    # diagonally shifted version to improve visual trace separation.
+    st.divider()
+    st.subheader("Overlayed Summed Mass Spectrum (Diagonal Offset View)")
+
+    x_offset_step = 20.0  # m/z shift per overlaid trace
+    if normalize:
+        y_offset_step = 10.0  # relative-intensity units (%)
+        y_offset_label = f"+{y_offset_step:.0f} intensity units"
+    else:
+        # Keep visible vertical separation in absolute-intensity mode.
+        global_y_max = max(np.max(spec["intensity"]) for spec in spectra)
+        y_offset_step = (0.10 * global_y_max) if global_y_max > 0 else 1.0
+        y_offset_label = f"+{y_offset_step:.2g} intensity units"
+
+    fig_offset, ax_offset = plt.subplots(figsize=(settings['fig_width'], fig_height))
+    all_x_min = float("inf")
+    all_x_max = float("-inf")
+    all_y_max = float("-inf")
+
+    for i, spec in enumerate(spectra):
+        color = colors[i % len(colors)]
+        x_offset = i * x_offset_step
+        y_offset = i * y_offset_step
+
+        mz_shifted = spec["mz"] + x_offset
+        intensity_shifted = spec["intensity"] + y_offset
+
+        all_x_min = min(all_x_min, float(np.min(mz_shifted)))
+        all_x_max = max(all_x_max, float(np.max(mz_shifted)))
+        all_y_max = max(all_y_max, float(np.max(intensity_shifted)))
+
+        ax_offset.plot(
+            mz_shifted,
+            intensity_shifted,
+            linewidth=settings['line_width'],
+            color=color,
+            label=spec["label"]
+        )
+
+    ax_offset.set_xlabel("m/z")
+    ax_offset.set_ylabel("Relative Intensity (%)" if normalize else "Intensity")
+    ax_offset.set_title(
+        f"Summed Mass Spectrum (Diagonal Offset: +{x_offset_step:.0f} m/z, {y_offset_label} per trace)",
+        fontweight='bold'
+    )
+    ax_offset.legend(loc='upper right')
+    if settings['show_grid']:
+        ax_offset.grid(True, alpha=0.3)
+
+    # Offset view is intentionally linear so the additive shift is interpretable.
+    ax_offset.ticklabel_format(axis='y', style='scientific', scilimits=(0, 0), useMathText=True)
+    _shift_sci_offset_left(ax_offset)
+
+    if all_x_min < all_x_max:
+        ax_offset.set_xlim(all_x_min, all_x_max)
+    if all_y_max > 0:
+        ax_offset.set_ylim(0, all_y_max * 1.10)
+
+    plt.tight_layout()
+    st.pyplot(fig_offset, use_container_width=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        png_data = export_figure(fig_offset, dpi=settings['export_dpi'])
+        st.download_button(
+            label="Download Offset PNG",
+            data=png_data,
+            file_name="time_change_summed_mass_spectrum_offset_overlay.png",
+            mime="image/png",
+            key="time_ms_offset_overlay_png"
+        )
+    with col2:
+        svg_data = export_figure_svg(fig_offset)
+        st.download_button(
+            label="Download Offset SVG",
+            data=svg_data,
+            file_name="time_change_summed_mass_spectrum_offset_overlay.svg",
+            mime="image/svg+xml",
+            key="time_ms_offset_overlay_svg"
+        )
+    with col3:
+        pdf_data = export_figure_pdf(fig_offset, dpi=settings['export_dpi'])
+        st.download_button(
+            label="Download Offset PDF",
+            data=pdf_data,
+            file_name="time_change_summed_mass_spectrum_offset_overlay.pdf",
+            mime="application/pdf",
+            key="time_ms_offset_overlay_pdf"
+        )
+
+    plt.close(fig_offset)
+
 
 def main():
     """Main application entry point."""
@@ -2665,29 +3099,35 @@ def main():
     samples = load_samples(selected_files)
     sample_list = [samples[p] for p in selected_files]
 
-    # Initialize active tab in session state
-    if 'active_tab' not in st.session_state:
-        st.session_state.active_tab = "Single Sample"
+    # Tab selector using a single session-state key to avoid one-click lag.
+    tab_options = ["Single Sample", "EIC Batch", "Deconvolution", "Batch Deconvolution", "Time Progression", "Time Change MS"]
 
-    # Auto-switch to Deconvolution tab for C4 method samples
+    # Migrate legacy tab key from older builds if present.
+    if "active_tab" not in st.session_state:
+        legacy_tab = st.session_state.get("tab_selector")
+        st.session_state.active_tab = legacy_tab if legacy_tab in tab_options else "Single Sample"
+    if "tab_selector" in st.session_state:
+        del st.session_state["tab_selector"]
+
+    # Auto-switch to Deconvolution tab for C4 method samples.
+    # Do not override an explicit user tab choice (e.g., Batch/Time tabs).
     if len(sample_list) == 1 and getattr(sample_list[0], 'is_c4_method', False):
-        # Only auto-switch once per sample (not on every rerun)
         current_sample_name = sample_list[0].name
         if st.session_state.get('_c4_auto_switched') != current_sample_name:
-            st.session_state.active_tab = "Deconvolution"
+            if st.session_state.get("active_tab") in ("Single Sample", "Deconvolution"):
+                st.session_state.active_tab = "Deconvolution"
             st.session_state._c4_auto_switched = current_sample_name
 
-    # Tab selector using radio buttons (preserves state across reruns)
-    tab_options = ["Single Sample", "EIC Batch", "Deconvolution", "Batch Deconvolution", "Time Progression", "Time Change MS"]
+    if st.session_state.get("active_tab") not in tab_options:
+        st.session_state.active_tab = "Single Sample"
     active_tab = st.radio(
         "Analysis",
         tab_options,
-        index=tab_options.index(st.session_state.active_tab) if st.session_state.active_tab in tab_options else 0,
+        index=tab_options.index(st.session_state.active_tab),
         horizontal=True,
-        key="tab_selector",
+        key="active_tab",
         label_visibility="collapsed"
     )
-    st.session_state.active_tab = active_tab
 
     st.divider()
 

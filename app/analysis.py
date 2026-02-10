@@ -248,7 +248,11 @@ def find_peaks(times: np.ndarray, intensities: np.ndarray,
             'time': times[idx],
             'intensity': intensities[idx],
             'area': area,
-            'index': idx
+            'index': idx,
+            'left_index': int(left_base),
+            'right_index': int(right_base),
+            'start_time': float(times[left_base]),
+            'end_time': float(times[right_base]),
         })
 
     return peaks
