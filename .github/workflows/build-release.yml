@@ -1,0 +1,188 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build macOS app
+        run: |
+          pyinstaller \
+            --name=LCMS-Analysis \
+            --onedir \
+            --console \
+            --add-data "app:app" \
+            --copy-metadata streamlit \
+            --copy-metadata altair \
+            --collect-data streamlit \
+            --hidden-import=streamlit \
+            --hidden-import=streamlit.runtime.scriptrunner \
+            --hidden-import=streamlit.runtime.scriptrunner.magic_funcs \
+            --hidden-import=streamlit.web.cli \
+            --hidden-import=rainbow \
+            --hidden-import=scipy.signal \
+            --hidden-import=scipy.integrate \
+            --hidden-import=matplotlib.backends.backend_svg \
+            --hidden-import=matplotlib.backends.backend_pdf \
+            --hidden-import=matplotlib.backends.backend_agg \
+            --exclude-module=torch \
+            --exclude-module=tensorflow \
+            --exclude-module=keras \
+            --exclude-module=IPython \
+            --exclude-module=jupyter \
+            --exclude-module=notebook \
+            --exclude-module=pytest \
+            --noconfirm \
+            launcher.py
+
+      - name: Remove AppleDouble files (macOS)
+        run: |
+          find dist/LCMS-Analysis -name '._*' -delete
+      
+      - name: Create ZIP
+        run: |
+          cd dist
+          zip -r LCMS-Analysis-macOS.zip LCMS-Analysis
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LCMS-Analysis-macOS
+          path: dist/LCMS-Analysis-macOS.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build Windows app
+        run: |
+          pyinstaller `
+            --name=LCMS-Analysis `
+            --onedir `
+            --console `
+            --add-data "app;app" `
+            --copy-metadata streamlit `
+            --copy-metadata altair `
+            --collect-data streamlit `
+            --hidden-import=streamlit `
+            --hidden-import=streamlit.runtime.scriptrunner `
+            --hidden-import=streamlit.runtime.scriptrunner.magic_funcs `
+            --hidden-import=streamlit.web.cli `
+            --hidden-import=rainbow `
+            --hidden-import=scipy.signal `
+            --hidden-import=scipy.integrate `
+            --hidden-import=matplotlib.backends.backend_svg `
+            --hidden-import=matplotlib.backends.backend_pdf `
+            --hidden-import=matplotlib.backends.backend_agg `
+            --exclude-module=torch `
+            --exclude-module=tensorflow `
+            --exclude-module=keras `
+            --exclude-module=IPython `
+            --exclude-module=jupyter `
+            --exclude-module=notebook `
+            --exclude-module=pytest `
+            --noconfirm `
+            launcher.py
+
+      - name: Remove AppleDouble files (Windows)
+        run: |
+          Get-ChildItem -Path dist\LCMS-Analysis -Recurse -Force -Filter '._*' | Remove-Item -Force
+      
+      - name: Create ZIP
+        run: Compress-Archive -Path dist\LCMS-Analysis -DestinationPath dist\LCMS-Analysis-Windows.zip
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LCMS-Analysis-Windows
+          path: dist/LCMS-Analysis-Windows.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LCMS-Analysis-macOS
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LCMS-Analysis-Windows
+
+      - name: List files
+        run: ls -la
+
+      - name: Create versioned asset copies
+        run: |
+          cp LCMS-Analysis-macOS.zip LCMS-Analysis-${{ github.ref_name }}-macOS.zip
+          cp LCMS-Analysis-Windows.zip LCMS-Analysis-${{ github.ref_name }}-Windows.zip
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LCMS-Analysis-macOS.zip
+            LCMS-Analysis-Windows.zip
+            LCMS-Analysis-${{ github.ref_name }}-macOS.zip
+            LCMS-Analysis-${{ github.ref_name }}-Windows.zip
+          body: |
+            ## LC-MS Analysis Desktop App
+
+            Download the ZIP for your platform:
+            - **macOS (latest link)**: LCMS-Analysis-macOS.zip
+            - **Windows (latest link)**: LCMS-Analysis-Windows.zip
+            - **macOS (versioned)**: LCMS-Analysis-${{ github.ref_name }}-macOS.zip
+            - **Windows (versioned)**: LCMS-Analysis-${{ github.ref_name }}-Windows.zip
+
+            ### Installation
+
+            **Windows:**
+            1. Extract the ZIP file
+            2. Double-click `LCMS-Analysis.exe`
+            3. Your browser will open with the app
+
+            **macOS:**
+            1. Extract the ZIP file
+            2. Open Terminal and run:
+               ```
+               xattr -cr ~/Downloads/LCMS-Analysis
+               ```
+            3. Double-click `LCMS-Analysis` or run `./LCMS-Analysis` in Terminal
+            4. Your browser will open with the app
+
+            ### Usage
+            - Use **Browse Files** mode to select .D folders directly (no ZIP needed!)
+            - Supports UV-Vis, TIC, EIC, and protein deconvolution

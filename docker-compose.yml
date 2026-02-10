@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  lcms-webapp:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount network drive - adjust source path as needed for your system
+      - /Volumes/chab_loc_lang_s1:/data/lcms:ro
+      # Mount app directory for development (optional - comment out for production)
+      - ./app:/app/app
+    environment:
+      - LCMS_BASE_PATH=/data/lcms
+      - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=500
+    restart: unless-stopped

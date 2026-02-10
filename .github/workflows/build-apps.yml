@@ -1,0 +1,129 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macOS
+          - os: windows-latest
+            platform: Windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read app version
+        id: app_version
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building app version: $VERSION"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build macOS app
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller \
+            --name=LCMS-Analysis \
+            --onedir \
+            --console \
+            --add-data "app:app" \
+            --copy-metadata streamlit \
+            --copy-metadata altair \
+            --collect-data streamlit \
+            --hidden-import=streamlit \
+            --hidden-import=streamlit.runtime.scriptrunner \
+            --hidden-import=streamlit.runtime.scriptrunner.magic_funcs \
+            --hidden-import=streamlit.web.cli \
+            --hidden-import=rainbow \
+            --hidden-import=scipy.signal \
+            --hidden-import=scipy.integrate \
+            --hidden-import=matplotlib.backends.backend_svg \
+            --hidden-import=matplotlib.backends.backend_pdf \
+            --hidden-import=matplotlib.backends.backend_agg \
+            --exclude-module=torch \
+            --exclude-module=tensorflow \
+            --exclude-module=keras \
+            --exclude-module=IPython \
+            --exclude-module=jupyter \
+            --exclude-module=notebook \
+            --exclude-module=pytest \
+            --noconfirm \
+            launcher.py
+
+      - name: Build Windows app
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller `
+            --name=LCMS-Analysis `
+            --onedir `
+            --console `
+            --add-data "app;app" `
+            --copy-metadata streamlit `
+            --copy-metadata altair `
+            --collect-data streamlit `
+            --hidden-import=streamlit `
+            --hidden-import=streamlit.runtime.scriptrunner `
+            --hidden-import=streamlit.runtime.scriptrunner.magic_funcs `
+            --hidden-import=streamlit.web.cli `
+            --hidden-import=rainbow `
+            --hidden-import=scipy.signal `
+            --hidden-import=scipy.integrate `
+            --hidden-import=matplotlib.backends.backend_svg `
+            --hidden-import=matplotlib.backends.backend_pdf `
+            --hidden-import=matplotlib.backends.backend_agg `
+            --exclude-module=torch `
+            --exclude-module=tensorflow `
+            --exclude-module=keras `
+            --exclude-module=IPython `
+            --exclude-module=jupyter `
+            --exclude-module=notebook `
+            --exclude-module=pytest `
+            --noconfirm `
+            launcher.py
+
+      - name: Remove AppleDouble files (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          find dist/LCMS-Analysis -name '._*' -delete
+
+      - name: Remove AppleDouble files (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Get-ChildItem -Path dist\LCMS-Analysis -Recurse -Force -Filter '._*' | Remove-Item -Force
+
+      - name: Create ZIP (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS.zip LCMS-Analysis
+
+      - name: Create ZIP (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path dist\LCMS-Analysis -DestinationPath dist\LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-${{ matrix.platform }}
+          path: dist/LCMS-Analysis-v${{ steps.app_version.outputs.version }}-${{ matrix.platform }}.zip
