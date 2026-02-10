@@ -154,18 +154,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            LCMS-Analysis-macOS.zip
-            LCMS-Analysis-Windows.zip
             LCMS-Analysis-${{ github.ref_name }}-macOS.zip
             LCMS-Analysis-${{ github.ref_name }}-Windows.zip
           body: |
             ## LC-MS Analysis Desktop App
 
             Download the ZIP for your platform:
-            - **macOS (latest link)**: LCMS-Analysis-macOS.zip
-            - **Windows (latest link)**: LCMS-Analysis-Windows.zip
-            - **macOS (versioned)**: LCMS-Analysis-${{ github.ref_name }}-macOS.zip
-            - **Windows (versioned)**: LCMS-Analysis-${{ github.ref_name }}-Windows.zip
+            - **macOS**: LCMS-Analysis-${{ github.ref_name }}-macOS.zip
+            - **Windows**: LCMS-Analysis-${{ github.ref_name }}-Windows.zip
 
             ### Installation
 

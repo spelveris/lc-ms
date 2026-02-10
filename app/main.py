@@ -654,6 +654,122 @@ def _needs_low_mw_profile(primary_results: list[dict]) -> bool:
     return True
 
 
+def _run_local_machine_protein_profile(
+    mz: np.ndarray,
+    intensity: np.ndarray,
+    *,
+    min_charge: int,
+    max_charge: int,
+    min_peaks: int,
+    noise_cutoff: float,
+    abundance_cutoff_pct: float,
+    mw_agreement_pct: float,
+    mw_assign_cutoff_pct: float,
+    envelope_cutoff_pct: float,
+    pwhh: float,
+    low_mw: float,
+    high_mw: float,
+    contig_min: int,
+    use_mz_agreement: bool,
+    use_monoisotopic: bool,
+) -> list[dict]:
+    """Run one protein-profile deconvolution pass with the provided charge bounds."""
+    return deconvolute_protein_local_lcms_machine_like(
+        mz,
+        intensity,
+        min_charge=min_charge,
+        max_charge=max_charge,
+        min_peaks=min_peaks,
+        noise_cutoff=noise_cutoff,
+        abundance_cutoff=abundance_cutoff_pct / 100.0,
+        mw_agreement=mw_agreement_pct / 100.0,
+        mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
+        envelope_cutoff=envelope_cutoff_pct / 100.0,
+        pwhh=pwhh,
+        low_mw=low_mw,
+        high_mw=high_mw,
+        contig_min=contig_min,
+        use_mz_agreement=use_mz_agreement,
+        use_monoisotopic_proton=use_monoisotopic,
+    )
+
+
+def _run_local_machine_auto_profile(
+    mz: np.ndarray,
+    intensity: np.ndarray,
+    *,
+    min_charge: int,
+    max_charge: int,
+    min_peaks: int,
+    noise_cutoff: float,
+    abundance_cutoff_pct: float,
+    mw_agreement_pct: float,
+    mw_assign_cutoff_pct: float,
+    envelope_cutoff_pct: float,
+    pwhh: float,
+    low_mw: float,
+    high_mw: float,
+    contig_min: int,
+    use_mz_agreement: bool,
+    use_monoisotopic: bool,
+    allow_auto_fallback: bool,
+) -> tuple[list[dict], str]:
+    """
+    Run local-machine deconvolution with default auto profile logic.
+
+    Flow in auto mode:
+    1) protein profile at configured max charge (default 50)
+    2) if weak/untrustworthy, switch to low-MW fallback profile
+    """
+    results = _run_local_machine_protein_profile(
+        mz,
+        intensity,
+        min_charge=min_charge,
+        max_charge=max_charge,
+        min_peaks=min_peaks,
+        noise_cutoff=noise_cutoff,
+        abundance_cutoff_pct=abundance_cutoff_pct,
+        mw_agreement_pct=mw_agreement_pct,
+        mw_assign_cutoff_pct=mw_assign_cutoff_pct,
+        envelope_cutoff_pct=envelope_cutoff_pct,
+        pwhh=pwhh,
+        low_mw=low_mw,
+        high_mw=high_mw,
+        contig_min=contig_min,
+        use_mz_agreement=use_mz_agreement,
+        use_monoisotopic=use_monoisotopic,
+    )
+    profile_note = "Profile: Protein (auto)"
+
+    if allow_auto_fallback and _needs_low_mw_profile(results):
+        low_profile_min = max(low_mw, 2000.0)
+        low_profile_max = min(high_mw, 10000.0)
+        if low_profile_min < low_profile_max:
+            low_results = deconvolute_protein_local_lcms_machine_like(
+                mz,
+                intensity,
+                min_charge=2,
+                max_charge=8,
+                min_peaks=max(3, int(min_peaks)),
+                noise_cutoff=noise_cutoff,
+                abundance_cutoff=min(abundance_cutoff_pct / 100.0, 0.05),
+                mw_agreement=mw_agreement_pct / 100.0,
+                mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
+                envelope_cutoff=envelope_cutoff_pct / 100.0,
+                pwhh=pwhh,
+                low_mw=low_profile_min,
+                high_mw=low_profile_max,
+                contig_min=2,
+                use_mz_agreement=use_mz_agreement,
+                use_monoisotopic_proton=use_monoisotopic,
+            )
+            if low_results:
+                results = low_results
+                profile_note = "Profile: Low MW (auto fallback)"
+
+    return results, profile_note
+
+
 def _run_default_deconvolution(mz: np.ndarray, intensity: np.ndarray) -> list[dict]:
     """Run deconvolution with the default non-expert settings."""
     # Defaults aligned with the main deconvolution view.
@@ -669,50 +785,25 @@ def _run_default_deconvolution(mz: np.ndarray, intensity: np.ndarray) -> list[di
     min_charge = 5
     max_charge = 50
 
-    results = deconvolute_protein_local_lcms_machine_like(
+    results, _ = _run_local_machine_auto_profile(
         mz,
         intensity,
         min_charge=min_charge,
         max_charge=max_charge,
         min_peaks=3,
         noise_cutoff=noise_cutoff,
-        abundance_cutoff=abundance_cutoff_pct / 100.0,
-        mw_agreement=mw_agreement_pct / 100.0,
-        mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
-        envelope_cutoff=envelope_cutoff_pct / 100.0,
+        abundance_cutoff_pct=abundance_cutoff_pct,
+        mw_agreement_pct=mw_agreement_pct,
+        mw_assign_cutoff_pct=mw_assign_cutoff_pct,
+        envelope_cutoff_pct=envelope_cutoff_pct,
         pwhh=pwhh,
         low_mw=low_mw,
         high_mw=high_mw,
         contig_min=contig_min,
         use_mz_agreement=False,
-        use_monoisotopic_proton=False,
+        use_monoisotopic=False,
+        allow_auto_fallback=True,
     )
-
-    # Same low-MW fallback strategy as default (non-expert) single-sample mode.
-    if _needs_low_mw_profile(results):
-        low_profile_min = max(low_mw, 2000.0)
-        low_profile_max = min(high_mw, 10000.0)
-        if low_profile_min < low_profile_max:
-            low_results = deconvolute_protein_local_lcms_machine_like(
-                mz,
-                intensity,
-                min_charge=2,
-                max_charge=8,
-                min_peaks=3,
-                noise_cutoff=noise_cutoff,
-                abundance_cutoff=min(abundance_cutoff_pct / 100.0, 0.05),
-                mw_agreement=mw_agreement_pct / 100.0,
-                mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
-                envelope_cutoff=envelope_cutoff_pct / 100.0,
-                pwhh=pwhh,
-                low_mw=low_profile_min,
-                high_mw=low_profile_max,
-                contig_min=2,
-                use_mz_agreement=False,
-                use_monoisotopic_proton=False,
-            )
-            if low_results:
-                results = low_results
 
     results = [r for r in results if low_mw <= r["mass"] <= high_mw]
     results.sort(key=lambda x: x["intensity"], reverse=True)
@@ -775,6 +866,14 @@ def sidebar_file_browser():
     """Render the interactive file browser in the sidebar."""
 
     current_path = st.session_state.current_path
+
+    def _remove_selected_file(path: str) -> None:
+        """Remove a selected file and keep the matching checkbox unchecked."""
+        if path in st.session_state.selected_files:
+            st.session_state.selected_files.remove(path)
+        checkbox_key = f"select_{path}"
+        if checkbox_key in st.session_state:
+            st.session_state[checkbox_key] = False
 
     # Keep browser open while selecting multiple files to avoid collapsing
     # after the first checkbox interaction.
@@ -873,16 +972,18 @@ def sidebar_file_browser():
     # Show selected files summary in expander
     if st.session_state.selected_files:
         with st.sidebar.expander(f"Selected Files ({len(st.session_state.selected_files)})", expanded=True):
-            for path in st.session_state.selected_files:
+            for path in list(st.session_state.selected_files):
                 col1, col2 = st.columns([4, 1])
                 with col1:
                     st.caption(Path(path).name)
                 with col2:
                     if st.button("X", key=f"remove_{path}"):
-                        st.session_state.selected_files.remove(path)
+                        _remove_selected_file(path)
                         st.rerun()
 
             if st.button("Clear all", use_container_width=True):
+                for path in list(st.session_state.selected_files):
+                    _remove_selected_file(path)
                 st.session_state.selected_files = []
                 st.rerun()
 
@@ -1399,6 +1500,22 @@ def time_progression_analysis(samples: list, settings):
             file_name="time_progression_analysis.pdf",
             mime="application/pdf"
         )
+
+    # Run metadata (compact footer for reporting context)
+    st.caption("Analysis metadata")
+    methods = [getattr(s, "acq_method", None) for s in ordered_samples]
+    methods_present = [m for m in methods if m]
+    if methods_present:
+        unique_methods = sorted(set(methods_present))
+        if len(unique_methods) == 1:
+            st.caption(f"Method: {unique_methods[0]}")
+        else:
+            st.caption("Methods: " + ", ".join(unique_methods))
+    else:
+        st.caption("Method: n/a")
+
+    file_names = [s.name[:-2] if s.name.lower().endswith(".d") else s.name for s in ordered_samples]
+    st.caption("Files: " + ", ".join(file_names))
 
 
 def eic_batch_analysis(sample, settings):
@@ -1928,52 +2045,26 @@ def deconvolution_analysis(sample, settings):
         with st.spinner("Running deconvolution..."):
             auto_profile_note = None
             if method == "Local LC-MS machine-like":
-                results = deconvolute_protein_local_lcms_machine_like(
-                    mz, intensity,
-                    min_charge=min_charge,
-                    max_charge=max_charge,
-                    min_peaks=min_peaks,
-                    noise_cutoff=noise_cutoff,
-                    abundance_cutoff=abundance_cutoff_pct / 100.0,
-                    mw_agreement=mw_agreement_pct / 100.0,
-                    mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
-                    envelope_cutoff=envelope_cutoff_pct / 100.0,
-                    pwhh=pwhh,
-                    low_mw=low_mw,
-                    high_mw=high_mw,
-                    contig_min=contig_min,
-                    use_mz_agreement=use_mz_agreement,
-                    use_monoisotopic_proton=use_monoisotopic
+                results, auto_profile_note = _run_local_machine_auto_profile(
+                    mz,
+                    intensity,
+                    min_charge=int(min_charge),
+                    max_charge=int(max_charge),
+                    min_peaks=int(min_peaks),
+                    noise_cutoff=float(noise_cutoff),
+                    abundance_cutoff_pct=float(abundance_cutoff_pct),
+                    mw_agreement_pct=float(mw_agreement_pct),
+                    mw_assign_cutoff_pct=float(mw_assign_cutoff_pct),
+                    envelope_cutoff_pct=float(envelope_cutoff_pct),
+                    pwhh=float(pwhh),
+                    low_mw=float(low_mw),
+                    high_mw=float(high_mw),
+                    contig_min=int(contig_min),
+                    use_mz_agreement=bool(use_mz_agreement),
+                    use_monoisotopic=bool(use_monoisotopic),
+                    # Keep manual/expert runs explicit: no auto profile switching.
+                    allow_auto_fallback=not expert_mode,
                 )
-
-                auto_profile_note = "Profile: Protein (auto)"
-
-                # Default mode fallback for low-MW datasets (e.g., 3-5 kDa species).
-                # Keep expert mode unchanged so manual tuning remains explicit.
-                if not expert_mode and _needs_low_mw_profile(results):
-                    low_profile_min = max(float(low_mw), 2000.0)
-                    low_profile_max = min(float(high_mw), 10000.0)
-                    if low_profile_min < low_profile_max:
-                        low_results = deconvolute_protein_local_lcms_machine_like(
-                            mz, intensity,
-                            min_charge=2,
-                            max_charge=8,
-                            min_peaks=max(3, int(min_peaks)),
-                            noise_cutoff=noise_cutoff,
-                            abundance_cutoff=min(abundance_cutoff_pct / 100.0, 0.05),
-                            mw_agreement=mw_agreement_pct / 100.0,
-                            mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
-                            envelope_cutoff=envelope_cutoff_pct / 100.0,
-                            pwhh=pwhh,
-                            low_mw=low_profile_min,
-                            high_mw=low_profile_max,
-                            contig_min=2,
-                            use_mz_agreement=use_mz_agreement,
-                            use_monoisotopic_proton=use_monoisotopic
-                        )
-                        if low_results:
-                            results = low_results
-                            auto_profile_note = "Profile: Low MW (auto fallback)"
             else:
                 results = deconvolute_protein(
                     mz, intensity,
@@ -2075,10 +2166,19 @@ def deconvolution_analysis(sample, settings):
         show_full_precision = st.checkbox("Show full precision masses", value=False, key="deconv_full_precision")
 
         st.divider()
-        st.subheader(f"Results ({len(results)} masses detected)")
+
+        # In non-expert mode, filter to components >= 5% relative intensity
+        # to suppress low-confidence artifacts. Expert mode shows all.
+        if not expert_mode and results:
+            top_intensity = results[0]['intensity']
+            significant_results = [r for r in results if r['intensity'] >= 0.05 * top_intensity]
+            st.subheader(f"Results ({len(significant_results)} components, ≥5% rel. intensity)")
+        else:
+            significant_results = results
+            st.subheader(f"Results ({len(results)} masses detected)")
 
         # Limit results to top N
-        display_results = results[:top_n_masses]
+        display_results = significant_results[:top_n_masses]
 
         # Results table
         result_data = []
@@ -2173,15 +2273,16 @@ def deconvolution_analysis(sample, settings):
 
         # Show theoretical m/z for selected mass
         st.subheader("Theoretical m/z Values")
+        theo_list = significant_results[:10]
         selected_mass_idx = st.selectbox(
             "Select mass to view theoretical peaks",
-            range(len(results[:10])),
-            format_func=lambda i: f"{results[i]['mass']:.2f} Da",
+            range(len(theo_list)),
+            format_func=lambda i: f"{theo_list[i]['mass']:.2f} Da",
             key="theo_mz_mass_select"
         )
 
         if selected_mass_idx is not None:
-            selected_result = results[selected_mass_idx]
+            selected_result = theo_list[selected_mass_idx]
             use_mono = st.session_state.get('deconv_use_monoisotopic', False)
             theoretical = get_theoretical_mz(
                 selected_result['mass'],
@@ -2252,6 +2353,11 @@ def batch_deconvolution_analysis(samples: list, settings):
         if not results:
             st.info("No masses detected for this sample.")
             continue
+
+        # Filter to >= 5% relative intensity (batch always uses non-expert view)
+        if results:
+            top_intensity = results[0]['intensity']
+            results = [r for r in results if r['intensity'] >= 0.05 * top_intensity]
 
         display_results = results[:top_n_masses]
         fig = create_deconvoluted_masses_figure(sample.name, display_results, style)

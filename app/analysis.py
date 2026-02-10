@@ -922,17 +922,31 @@ def deconvolute_protein_local_lcms_machine_like(
                 continue
 
             ion_charges = sorted(set(i['charge'] for i in ions))
-            # Enforce contiguous ladder minimum if requested
-            if contig_min > 1:
-                longest = 1
-                current = 1
-                for i in range(1, len(ion_charges)):
-                    if ion_charges[i] == ion_charges[i - 1] + 1:
-                        current += 1
-                        longest = max(longest, current)
-                    else:
-                        current = 1
-                if longest < contig_min:
+            # Enforce contiguous ladder minimum and reject sparse high-charge
+            # pseudo-ladders that can overfit dense spectra at max_charge=50.
+            longest = 1
+            current = 1
+            for i in range(1, len(ion_charges)):
+                if ion_charges[i] == ion_charges[i - 1] + 1:
+                    current += 1
+                    longest = max(longest, current)
+                else:
+                    current = 1
+            if contig_min > 1 and longest < contig_min:
+                continue
+
+            # Two-tier contiguity gate to suppress sparse pseudo-ladders:
+            #   >= 8 charges: need longest >= 6 AND ratio >= 0.60
+            #   4-7 charges: need longest >= 4 AND ratio >= 0.60
+            #   < 4 charges: existing contig_min check above is sufficient
+            num_charges = len(ion_charges)
+            if num_charges >= 8:
+                contig_ratio = longest / num_charges
+                if longest < max(contig_min, 6) or contig_ratio < 0.60:
+                    continue
+            elif num_charges >= 4:
+                contig_ratio = longest / num_charges
+                if longest < 4 or contig_ratio < 0.60:
                     continue
 
             intensities = [i['intensity'] for i in ions]

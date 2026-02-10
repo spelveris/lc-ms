@@ -90,7 +90,21 @@ DEFAULT_SAMPLES = [
 ]
 
 
+def resolve_sample_path(path: Path) -> Path:
+    """Resolve sample/report path across legacy and comparison-folder layouts."""
+    if path.exists():
+        return path
+
+    parent = path.parent
+    alt = parent / "Comparison files" / path.name
+    if alt.exists():
+        return alt
+
+    return path
+
+
 def parse_report(report_path: Path) -> tuple[tuple[float, float], list[ReferenceComponent]]:
+    report_path = resolve_sample_path(report_path)
     if not report_path.exists():
         raise FileNotFoundError(f"Report not found: {report_path}")
 
@@ -132,6 +146,7 @@ def run_prediction(
     time_window: tuple[float, float],
     args: argparse.Namespace,
 ) -> list[PredictedComponent]:
+    sample_path = resolve_sample_path(sample_path)
     sample = read_sample(str(sample_path))
     if sample.error:
         raise RuntimeError(f"Failed to read sample {sample_path}: {sample.error}")

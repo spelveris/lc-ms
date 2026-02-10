@@ -299,7 +299,12 @@ def create_time_progression_figure(
         )
         axes[2 + j].set_title(panel_title_eic)
 
-    plt.tight_layout()
+    try:
+        plt.tight_layout()
+    except Exception:
+        # Avoid hard-failing on occasional text-layout parser errors on some
+        # desktop environments; keep rendering with explicit spacing.
+        fig.subplots_adjust(top=0.95, hspace=0.45)
     return fig
 
 
