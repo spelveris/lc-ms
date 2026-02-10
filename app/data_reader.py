@@ -101,6 +101,7 @@ class SampleData:
         self.ms_mz_axis: Optional[np.ndarray] = None  # m/z values for scans
         self.tic: Optional[np.ndarray] = None
         self.acq_method: Optional[str] = None
+        self.acq_info: dict = {}  # All key-value pairs from acq.txt
         self._loaded = False
         self._error: Optional[str] = None
         self._debug_info: dict = {}
@@ -119,7 +120,7 @@ class SampleData:
         return self.acq_method is not None and self.acq_method.upper().startswith("C4")
 
     def _parse_acq_method(self):
-        """Parse acquisition method name from acq.txt (UTF-16 encoded)."""
+        """Parse acquisition method name and other info from acq.txt (UTF-16 encoded)."""
         acq_path = Path(self.folder_path) / "acq.txt"
         if not acq_path.exists():
             return
@@ -127,12 +128,16 @@ class SampleData:
             text = acq_path.read_text(encoding="utf-16")
             for line in text.splitlines():
                 line = line.strip()
-                if line.lower().startswith("acq. method"):
-                    # Format: "Acq. Method: C4-Jup-standard.M"
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        self.acq_method = parts[1].strip()
-                    break
+                if not line or ':' not in line:
+                    continue
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    if val:
+                        self.acq_info[key] = val
+                    if key.lower().startswith("acq. method") or key.lower() == "acq method":
+                        self.acq_method = val
         except Exception:
             pass
 

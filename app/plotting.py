@@ -400,8 +400,9 @@ def create_single_sample_figure(
     # Format label templates
     title = title_template.format(name=sample.name)
 
-    # Support both single wavelength (legacy) and multiple wavelengths
-    if uv_wavelengths is None or len(uv_wavelengths) == 0:
+    # Support both single wavelength (legacy) and multiple wavelengths.
+    # Explicit empty list means "do not include UV panels".
+    if uv_wavelengths is None:
         uv_wavelengths = [uv_wavelength]
 
     if eic_targets is None:
@@ -784,6 +785,7 @@ def _plot_deconvoluted_masses_panel(
     subtitle: Optional[str] = None,
     show_obs_calc: bool = False,
     calc_mass_da: Optional[float] = None,
+    show_peak_labels: bool = True,
 ) -> None:
     """Render deconvoluted masses as a vertical-line spectrum on the given axis."""
     # Color palette for bars and labels
@@ -824,7 +826,10 @@ def _plot_deconvoluted_masses_panel(
 
         # Add mass labels with side offsets and collision avoidance so labels
         # don't sit directly on top of bars.
-        labeled_peaks = sorted(enumerate(zip(masses_kda, norm_intensities, masses)), key=lambda x: x[1][0])
+        if not show_peak_labels:
+            labeled_peaks = []  # skip label placement
+        else:
+            labeled_peaks = sorted(enumerate(zip(masses_kda, norm_intensities, masses)), key=lambda x: x[1][0])
         label_positions = []  # Track placed label anchors in data coordinates
         x_min, x_max = ax_deconv.get_xlim()
         y_top = ax_deconv.get_ylim()[1]
@@ -992,27 +997,24 @@ def _plot_deconvoluted_masses_panel(
             ann_x = min(x_max - 0.02 * x_span, top_x + 0.04 * x_span)
             ann_y = min(108.0, max(24.0, top_y * 0.84))
 
-            annotation_lines: list[tuple[str, str]] = []
-            if calc_mass_da is not None:
-                calc_text = f"{calc_mass_da:.2f}".rstrip("0").rstrip(".")
-                annotation_lines.append((f"calc: {calc_text}", "black"))
-            else:
-                annotation_lines.append(("calc: -", "black"))
+            # Render calc/obs labels and values. Labels are placed in data
+            # coords; values use a fixed point offset so they align in Arial.
+            calc_val = f"{calc_mass_da:.1f}" if calc_mass_da is not None else "-"
+            obs_val = f"{masses[top_idx]:.1f}"
+            obs_color = label_colors[top_idx % len(label_colors)]
+            pt_offset = 20  # points to the right of label anchor
 
-            obs_text = f"{masses[top_idx]:.1f}"
-            annotation_lines.append((f"obs: {obs_text}", label_colors[top_idx % len(label_colors)]))
-
-            for i, (txt, color) in enumerate(annotation_lines):
-                ax_deconv.text(
-                    ann_x,
-                    ann_y - i * 8.0,
-                    txt,
-                    ha='left',
-                    va='bottom',
-                    fontsize=8,
-                    fontweight='bold',
-                    color=color,
-                )
+            for row, (lbl, val, color) in enumerate([
+                ("calc:", calc_val, "black"),
+                ("obs:",  obs_val,  obs_color),
+            ]):
+                row_y = ann_y - row * 8.0
+                ax_deconv.text(ann_x, row_y, lbl, ha='left', va='bottom',
+                               fontsize=8, fontweight='bold', color=color)
+                ax_deconv.annotate(val, xy=(ann_x, row_y),
+                                   xytext=(pt_offset, 0), textcoords='offset points',
+                                   ha='left', va='bottom',
+                                   fontsize=8, fontweight='bold', color=color)
 
         ax_deconv.set_xlabel("Mass (kDa)")
         ax_deconv.set_ylabel("Relative Intensity (%)")
@@ -1185,6 +1187,7 @@ def create_deconvoluted_masses_figure(
     deconv_x_max_da = style.get('deconv_x_max_da', 50000.0)
     deconv_show_obs_calc = style.get('deconv_show_obs_calc', False)
     deconv_calc_mass_da = style.get('deconv_calc_mass_da')
+    deconv_show_peak_labels = style.get('deconv_show_peak_labels', True)
     sample_subtitle = sample_name[:-2] if sample_name.lower().endswith(".d") else sample_name
 
     # Match the physical panel size used by create_deconvolution_figure()
@@ -1215,6 +1218,149 @@ def create_deconvoluted_masses_figure(
         subtitle=sample_subtitle,
         show_obs_calc=deconv_show_obs_calc,
         calc_mass_da=deconv_calc_mass_da,
+        show_peak_labels=deconv_show_peak_labels,
     )
     plt.tight_layout(pad=0.8)
+    return fig
+
+
+def create_report_info_page(
+    sample_name: str,
+    acq_method: Optional[str],
+    app_version: str,
+    time_range: Optional[tuple[float, float]],
+    parameters: dict,
+    results: Optional[list[dict]],
+    acq_info: Optional[dict] = None,
+) -> matplotlib.figure.Figure:
+    """Render sample info + results table as a monospace-text report page (Agilent style).
+
+    Args:
+        sample_name: Name of the sample
+        acq_method: Acquisition method string
+        app_version: Application version
+        time_range: (start, end) deconvolution time window, or None
+        parameters: Dict of deconvolution parameters to display
+        results: Deconvolution results list, or None
+        acq_info: Optional dict of all acquisition metadata from acq.txt
+
+    Returns:
+        Matplotlib Figure (A4 portrait)
+    """
+    import datetime as _dt
+
+    A4_W, A4_H = 8.27, 11.69  # inches
+    fig = plt.figure(figsize=(A4_W, A4_H))
+    fig.patch.set_facecolor('white')
+
+    mono = {'family': 'monospace', 'fontsize': 9}
+    sep_line = "=" * 70
+
+    # Build text lines top-down
+    lines: list[str] = []
+    lines.append("Spectrum Deconvolution")
+    lines.append(f"Sample Name: {sample_name}")
+    if acq_method:
+        lines.append(f"Method:      {acq_method}")
+    lines.append("")
+    lines.append(sep_line)
+
+    # Acquisition info (two-column where possible)
+    acq = acq_info or {}
+    left_items = []
+    right_items = []
+    _map_left = [
+        ('Acq. Operator', 'Acq. Operator'),
+        ('Operator', 'Acq. Operator'),
+        ('Acq. Instrument', 'Acq. Instrument'),
+        ('Instrument', 'Acq. Instrument'),
+        ('Injection Date', 'Injection Date'),
+    ]
+    _map_right = [
+        ('Seq. Line', 'Seq. Line'),
+        ('Location', 'Location'),
+        ('Inj', 'Inj'),
+        ('Inj Volume', 'Inj Volume'),
+    ]
+    seen = set()
+    for acq_key, label in _map_left:
+        if acq_key in acq and label not in seen:
+            left_items.append(f"{label:18s}: {acq[acq_key]}")
+            seen.add(label)
+    for acq_key, label in _map_right:
+        if acq_key in acq and label not in seen:
+            right_items.append(f"{label:12s}: {acq[acq_key]}")
+            seen.add(label)
+
+    max_rows = max(len(left_items), len(right_items))
+    for i in range(max_rows):
+        left = left_items[i] if i < len(left_items) else ""
+        right = right_items[i] if i < len(right_items) else ""
+        lines.append(f"{left:45s}{right}")
+
+    # Method info
+    if 'Method' in acq and acq['Method'] != acq_method:
+        lines.append(f"{'Method':18s}: {acq['Method']}")
+    if 'Method Info' in acq:
+        lines.append(f"{'Method Info':18s}: {acq['Method Info']}")
+
+    lines.append("")
+    lines.append(sep_line)
+
+    # Deconvolution time range
+    if time_range:
+        lines.append(
+            f"Deconvolution window: {time_range[0]:.3f} - {time_range[1]:.3f} min"
+        )
+        lines.append("")
+
+    # Deconvolution Parameters section
+    lines.append(f"{'Deconvolution Parameters':^70s}")
+    lines.append(sep_line)
+    lines.append("")
+    if parameters:
+        for key, val in parameters.items():
+            lines.append(f"{key + ':':24s}{val}")
+    else:
+        lines.append("(default parameters)")
+    lines.append("")
+
+    # Results table
+    if results:
+        lines.append(sep_line)
+        lines.append(f"{'Detected Masses':^70s}")
+        lines.append(sep_line)
+        lines.append("")
+        hdr = f"{'Component':>10s}  {'Molecular':>12s}  {'Absolute':>12s}  {'Relative':>10s}"
+        hdr2 = f"{'':>10s}  {'Weight':>12s}  {'Abundance':>12s}  {'Abundance':>10s}"
+        lines.append(hdr)
+        lines.append(hdr2)
+        top_int = results[0]['intensity']
+        for i, r in enumerate(results[:15]):
+            label = chr(ord('A') + i) if i < 26 else str(i + 1)
+            rel = r['intensity'] / top_int * 100
+            lines.append(
+                f"{label:>10s}  {r['mass']:>12.2f}  {r['intensity']:>12.0f}  {rel:>10.2f}"
+            )
+        lines.append("")
+    elif results is not None:
+        lines.append("")
+        lines.append("No masses detected.")
+
+    # Render all lines
+    x0, y0 = 0.06, 0.95
+    line_spacing = 0.017
+    for i, line in enumerate(lines):
+        y_pos = y0 - i * line_spacing
+        if y_pos < 0.04:
+            break
+        fig.text(x0, y_pos, line, **mono, va='top')
+
+    # Footer
+    now_str = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    fig.text(0.06, 0.02, f"LC-MS Webapp v{app_version}  {now_str}",
+             fontsize=8, family='monospace', color='#666666')
+    fig.text(0.94, 0.02, "Page  1",
+             fontsize=8, family='monospace', color='#666666', ha='right')
+
     return fig

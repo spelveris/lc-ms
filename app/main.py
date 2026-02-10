@@ -137,6 +137,7 @@ from plotting import (
     create_deconvolution_figure,
     create_deconvoluted_masses_figure,
     create_mass_spectrum_figure,
+    create_report_info_page,
     export_figure,
     export_figure_svg,
     export_figure_pdf
@@ -3028,6 +3029,371 @@ def time_change_mass_spectra_analysis(samples: list, settings):
     plt.close(fig_offset)
 
 
+# ---------------------------------------------------------------------------
+# Average amino acid residue masses (Da) for theoretical protein mass calc
+# ---------------------------------------------------------------------------
+AA_MASSES = {
+    'G': 57.0519, 'A': 71.0788, 'V': 99.1326, 'L': 113.1594, 'I': 113.1594,
+    'P': 97.1167, 'F': 147.1766, 'W': 186.2132, 'M': 131.1926, 'S': 87.0782,
+    'T': 101.1051, 'C': 103.1388, 'Y': 163.1760, 'H': 137.1411, 'D': 115.0886,
+    'E': 129.1155, 'N': 114.1038, 'Q': 128.1307, 'K': 128.1741, 'R': 156.1875,
+}
+WATER_MASS = 18.01524
+
+# Common post-translational / adduct mass shifts
+KNOWN_MODS = {
+    'Oxidation (+O)': 15.999,
+    'Acetylation': 42.011,
+    'Phosphorylation': 79.966,
+    'Methylation': 14.016,
+    'Met loss (-M)': -131.040,
+    'Met loss + Acetyl': -89.030,
+    'Atto488': 572.0,
+    'Ubiquitin GG': 114.043,
+    'Disulfide (-2H)': -2.016,
+    'Deamidation': 0.984,
+    'Na adduct': 21.982,
+    'K adduct': 37.956,
+    'Glucuronidation': 176.032,
+}
+
+
+def mass_calculator_tab(sample_list: list, settings):
+    """Mass calculator: compare theoretical vs observed deconvolution masses."""
+    st.header("Mass Calculator")
+
+    mode = st.radio("Input mode", ["Amino acid sequence", "Known mass (Da)"], horizontal=True,
+                    key="masscalc_mode")
+
+    theoretical_mass = None
+
+    if mode == "Amino acid sequence":
+        seq_raw = st.text_area("Paste amino acid sequence (1-letter code)",
+                               height=120, key="masscalc_seq",
+                               placeholder="MQIFVKTLTGKTITLEVEPS...")
+        seq = ''.join(ch.upper() for ch in seq_raw if ch.isalpha())
+        if seq:
+            unknown = sorted({ch for ch in seq if ch not in AA_MASSES})
+            if unknown:
+                st.warning(f"Unknown residue(s): {', '.join(unknown)} — these are ignored.")
+            mass = sum(AA_MASSES.get(ch, 0.0) for ch in seq) + WATER_MASS
+            theoretical_mass = mass
+            st.metric("Theoretical average mass", f"{mass:.2f} Da")
+            st.caption(f"Sequence length: {len(seq)} residues")
+    else:
+        val = st.number_input("Enter known mass (Da)", min_value=0.0, max_value=1_000_000.0,
+                              value=0.0, step=0.01, format="%.2f", key="masscalc_known")
+        if val > 0:
+            theoretical_mass = val
+
+    if theoretical_mass is None:
+        st.info("Enter a sequence or mass above to begin.")
+        return
+
+    st.divider()
+
+    # Custom modifications
+    st.subheader("Modifications")
+    custom_mods = dict(KNOWN_MODS)
+
+    with st.expander("Add custom modification"):
+        cmod_name = st.text_input("Name", key="masscalc_cmod_name", placeholder="e.g. PEG-5k")
+        cmod_mass = st.number_input("Mass shift (Da)", value=0.0, step=0.01, format="%.3f",
+                                    key="masscalc_cmod_mass")
+        if cmod_name.strip() and cmod_mass != 0:
+            custom_mods[cmod_name.strip()] = cmod_mass
+
+    # Tolerance for matching
+    tol = st.slider("Matching tolerance (Da)", min_value=0.5, max_value=10.0, value=1.0,
+                    step=0.5, key="masscalc_tol")
+
+    # Show modification reference table
+    mod_ref = [{'Modification': k, 'Δm (Da)': f"{v:+.3f}",
+                'Expected mass': f"{theoretical_mass + v:.2f}"}
+               for k, v in custom_mods.items()]
+    st.caption("Known modifications relative to theoretical mass:")
+    render_text_table(mod_ref, ['Modification', 'Δm (Da)', 'Expected mass'])
+
+    # Compare against deconv results
+    st.divider()
+    st.subheader("Comparison with Deconvolution Results")
+
+    # Sample selector
+    if len(sample_list) == 1:
+        sample = sample_list[0]
+    else:
+        selected_idx = st.selectbox(
+            "Select sample",
+            range(len(sample_list)),
+            format_func=lambda i: sample_list[i].name,
+            key="masscalc_sample_idx"
+        )
+        sample = sample_list[selected_idx]
+
+    if sample.error or sample.ms_scans is None:
+        st.warning(f"No MS data available for {sample.name}.")
+        return
+
+    # Try cached results first, then auto-deconvolute
+    deconv_results = None
+    cached_results = st.session_state.get('deconv_results')
+    cached_sample = st.session_state.get('deconv_current_sample')
+    if cached_results and cached_sample == sample.name:
+        deconv_results = cached_results
+    else:
+        # Auto-run deconvolution for this sample
+        if sample.tic is not None:
+            auto_start, auto_end = _detect_deconvolution_window(sample)
+            if auto_end > auto_start:
+                mz, intensity = sum_spectra_in_range(sample, auto_start, auto_end)
+                if mz is not None and len(mz) > 0:
+                    with st.spinner(f"Running auto-deconvolution for {sample.name}..."):
+                        deconv_results = _run_default_deconvolution(mz, intensity)
+
+    if not deconv_results:
+        st.info(f"Could not obtain deconvolution results for {sample.name}. "
+                "Try running deconvolution manually in the Deconvolution tab.")
+        return
+
+    st.caption(f"Comparing against deconvolution results for **{sample.name}**")
+
+    columns = ['Rank', 'Observed (Da)', 'Δm (Da)', 'Rel. Int.', 'Annotation']
+    header_html = "".join(
+        f'<th style="text-align:left; padding:0.45rem 0.6rem; border-bottom:1px solid #666;">{escape(c)}</th>'
+        for c in columns
+    )
+    body_rows = []
+    for i, r in enumerate(deconv_results[:15]):
+        obs = r['mass']
+        delta = obs - theoretical_mass
+        # Check which modifications could explain the delta
+        annotations = []
+        for mod_name, mod_mass in custom_mods.items():
+            if abs(delta - mod_mass) <= tol:
+                annotations.append(mod_name)
+        if abs(delta) <= tol:
+            annotations.insert(0, "Unmodified")
+        annotation_str = ", ".join(annotations) if annotations else "\u2014"
+        rel_int = r['intensity'] / deconv_results[0]['intensity'] * 100
+        is_match = len(annotations) > 0
+        vals = [str(i + 1), f"{obs:.2f}", f"{delta:+.2f}", f"{rel_int:.1f}%", annotation_str]
+        weight = "bold" if is_match else "normal"
+        bg = "rgba(33,92,175,0.10)" if is_match else "transparent"
+        cells = "".join(
+            f'<td style="padding:0.40rem 0.6rem; border-bottom:1px solid #3f3f3f; '
+            f'font-weight:{weight};">{escape(v)}</td>'
+            for v in vals
+        )
+        body_rows.append(f'<tr style="background:{bg};">{cells}</tr>')
+
+    table_html = (
+        '<table style="width:100%; border-collapse:collapse; font-size:0.92rem;">'
+        f'<thead><tr>{header_html}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody>'
+        '</table>'
+    )
+    st.markdown(f'<div style="overflow-x:auto; padding:0;">{table_html}</div>',
+                unsafe_allow_html=True)
+
+    # Deconvoluted masses figure with theoretical mass reference line
+    st.divider()
+    display_results = deconv_results[:10]
+    fig_style = {
+        'fig_width': settings['fig_width'],
+        'show_grid': False,
+        'deconv_x_min_da': settings['deconv_x_min_da'],
+        'deconv_x_max_da': settings['deconv_x_max_da'],
+        'deconv_show_obs_calc': True,
+        'deconv_calc_mass_da': theoretical_mass,
+    }
+    fig_calc = create_deconvoluted_masses_figure(sample.name, display_results, fig_style)
+    st.pyplot(fig_calc, use_container_width=True)
+
+    col1, col2, col3 = st.columns(3)
+    export_key = sample.name.replace(" ", "_").replace(".", "_")
+    with col1:
+        png_data = export_figure(fig_calc, dpi=settings['export_dpi'])
+        st.download_button("Download PNG", data=png_data,
+                           file_name=f"{sample.name}_masscalc.png", mime="image/png",
+                           key=f"masscalc_png_{export_key}")
+    with col2:
+        svg_data = export_figure_svg(fig_calc)
+        st.download_button("Download SVG", data=svg_data,
+                           file_name=f"{sample.name}_masscalc.svg", mime="image/svg+xml",
+                           key=f"masscalc_svg_{export_key}")
+    with col3:
+        pdf_data = export_figure_pdf(fig_calc, dpi=settings['export_dpi'])
+        st.download_button("Download PDF", data=pdf_data,
+                           file_name=f"{sample.name}_masscalc.pdf", mime="application/pdf",
+                           key=f"masscalc_pdf_{export_key}")
+    plt.close(fig_calc)
+
+    # Clean version: only calc & obs, no per-peak labels
+    st.divider()
+    fig_style_clean = {
+        'fig_width': settings['fig_width'],
+        'show_grid': False,
+        'deconv_x_min_da': settings['deconv_x_min_da'],
+        'deconv_x_max_da': settings['deconv_x_max_da'],
+        'deconv_show_obs_calc': True,
+        'deconv_calc_mass_da': theoretical_mass,
+        'deconv_show_peak_labels': False,
+    }
+    fig_clean = create_deconvoluted_masses_figure(sample.name, display_results, fig_style_clean)
+    st.pyplot(fig_clean, use_container_width=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        png_data = export_figure(fig_clean, dpi=settings['export_dpi'])
+        st.download_button("Download PNG", data=png_data,
+                           file_name=f"{sample.name}_masscalc_clean.png", mime="image/png",
+                           key=f"masscalc_clean_png_{export_key}")
+    with col2:
+        svg_data = export_figure_svg(fig_clean)
+        st.download_button("Download SVG", data=svg_data,
+                           file_name=f"{sample.name}_masscalc_clean.svg", mime="image/svg+xml",
+                           key=f"masscalc_clean_svg_{export_key}")
+    with col3:
+        pdf_data = export_figure_pdf(fig_clean, dpi=settings['export_dpi'])
+        st.download_button("Download PDF", data=pdf_data,
+                           file_name=f"{sample.name}_masscalc_clean.pdf", mime="application/pdf",
+                           key=f"masscalc_clean_pdf_{export_key}")
+    plt.close(fig_clean)
+
+
+def report_export_tab(sample_list: list, settings):
+    """Generate a multi-page PDF report for a selected sample."""
+    from matplotlib.backends.backend_pdf import PdfPages
+    import io
+    import datetime
+
+    st.header("Report Export")
+
+    # Sample selector
+    if len(sample_list) == 1:
+        sample = sample_list[0]
+    else:
+        selected_idx = st.selectbox(
+            "Select sample",
+            range(len(sample_list)),
+            format_func=lambda i: sample_list[i].name,
+            key="report_sample_idx"
+        )
+        sample = sample_list[selected_idx]
+
+    if sample.error:
+        st.error(f"Error loading sample: {sample.error}")
+        return
+
+    st.write(f"**Sample:** {sample.name}")
+    st.write(f"**Method:** {sample.acq_method or 'N/A'}")
+
+    # Options
+    include_uv = st.checkbox("Include UV chromatogram", value=sample.uv_data is not None,
+                             disabled=sample.uv_data is None, key="report_inc_uv")
+    include_deconv = st.checkbox("Include deconvolution results", value=True, key="report_inc_deconv")
+
+    # Check if deconv results are available for this sample
+    deconv_results = None
+    deconv_time_range = None
+    if include_deconv:
+        stored_results = st.session_state.get('deconv_results')
+        stored_sample = st.session_state.get('deconv_current_sample')
+        if stored_results and stored_sample == sample.name:
+            deconv_results = stored_results
+            deconv_time_range = st.session_state.get('deconv_time_range')
+        else:
+            # Try running auto deconvolution
+            if sample.ms_scans is not None and sample.tic is not None:
+                auto_start, auto_end = _detect_deconvolution_window(sample)
+                if auto_end > auto_start:
+                    mz, intensity = sum_spectra_in_range(sample, auto_start, auto_end)
+                    if mz is not None and len(mz) > 0:
+                        deconv_results = _run_default_deconvolution(mz, intensity)
+                        deconv_time_range = (auto_start, auto_end)
+            if not deconv_results:
+                st.caption("No deconvolution results available. Run deconvolution first, or auto-deconv will be attempted.")
+
+    A4_W, A4_H = 8.27, 11.69  # A4 in inches
+
+    if st.button("Generate PDF Report", type="primary", key="report_generate"):
+        with st.spinner("Generating report..."):
+            buf = io.BytesIO()
+            with PdfPages(buf) as pdf:
+                # Page 1: Info + results table (already A4)
+                params = {
+                    'Mass range': '500 – 50,000 Da',
+                    'Charge range': '5 – 50',
+                    'Noise cutoff': '1,000 counts',
+                }
+                fig_info = create_report_info_page(
+                    sample_name=sample.name,
+                    acq_method=sample.acq_method,
+                    app_version=config.APP_VERSION,
+                    time_range=deconv_time_range,
+                    parameters=params if deconv_results else {},
+                    results=deconv_results,
+                    acq_info=getattr(sample, 'acq_info', None),
+                )
+                pdf.savefig(fig_info)
+                plt.close(fig_info)
+
+                # Page 2: Chromatograms (UV + TIC)
+                if sample.tic is not None or (include_uv and sample.uv_data is not None):
+                    style = {
+                        'fig_width': A4_W - 0.8,
+                        'fig_height_per_panel': 3.0,
+                        'line_width': settings['line_width'],
+                        'show_grid': settings['show_grid'],
+                        'y_scale': 'linear',
+                        'colors': settings['colors'],
+                        'labels': settings['labels'],
+                    }
+                    fig_chrom = create_single_sample_figure(
+                        sample,
+                        uv_wavelengths=settings['uv_wavelengths'] if include_uv else [],
+                        eic_targets=[],
+                        style=style,
+                        uv_smoothing=settings['uv_smoothing'],
+                        eic_smoothing=settings['eic_smoothing'],
+                    )
+                    fig_chrom.set_size_inches(A4_W, A4_H)
+                    pdf.savefig(fig_chrom)
+                    plt.close(fig_chrom)
+
+                # Page 3: Deconvolution figure (if results available)
+                if deconv_results and deconv_time_range:
+                    deconv_style = {
+                        'fig_width': A4_W - 0.8,
+                        'line_width': settings['line_width'],
+                        'show_grid': True,
+                        'deconv_x_min_da': settings['deconv_x_min_da'],
+                        'deconv_x_max_da': settings['deconv_x_max_da'],
+                        'deconv_show_obs_calc': False,
+                        'deconv_calc_mass_da': None,
+                    }
+                    display_results = deconv_results[:10]
+                    fig_deconv = create_deconvolution_figure(
+                        sample, deconv_time_range[0], deconv_time_range[1],
+                        display_results, deconv_style
+                    )
+                    fig_deconv.set_size_inches(A4_W, A4_H)
+                    pdf.savefig(fig_deconv)
+                    plt.close(fig_deconv)
+
+            buf.seek(0)
+            date_str = datetime.date.today().strftime("%Y%m%d")
+            filename = f"{sample.name}_report_{date_str}.pdf"
+            st.download_button(
+                "Download PDF Report",
+                data=buf.getvalue(),
+                file_name=filename,
+                mime="application/pdf",
+                key="report_download"
+            )
+        st.success("Report generated successfully.")
+
+
 def main():
     """Main application entry point."""
     init_session_state()
@@ -3079,6 +3445,8 @@ def main():
             - **EIC Batch Extraction**: Extract multiple EICs with peak area calculation
             - **Protein Deconvolution**: Deconvolute multiply-charged protein spectra
             - **Batch Deconvolution**: Run default deconvolution for multiple samples at once
+            - **Mass Calculator**: Compare theoretical vs observed masses, annotate modifications
+            - **Report Export**: Generate multi-page PDF reports
             - **Export**: Download plots as PNG, SVG, or PDF
             """)
         else:
@@ -3091,6 +3459,8 @@ def main():
             - **EIC Batch Extraction**: Extract multiple EICs with peak area calculation
             - **Protein Deconvolution**: Deconvolute multiply-charged protein spectra
             - **Batch Deconvolution**: Run default deconvolution for multiple samples at once
+            - **Mass Calculator**: Compare theoretical vs observed masses, annotate modifications
+            - **Report Export**: Generate multi-page PDF reports
             - **Export**: Download plots as PNG, SVG, or PDF
             """)
         return
@@ -3100,7 +3470,7 @@ def main():
     sample_list = [samples[p] for p in selected_files]
 
     # Tab selector using a single session-state key to avoid one-click lag.
-    tab_options = ["Single Sample", "EIC Batch", "Deconvolution", "Batch Deconvolution", "Time Progression", "Time Change MS"]
+    tab_options = ["Single Sample", "EIC Batch", "Deconvolution", "Batch Deconvolution", "Time Progression", "Time Change MS", "Mass Calculator", "Report Export"]
 
     # Migrate legacy tab key from older builds if present.
     if "active_tab" not in st.session_state:
@@ -3108,6 +3478,8 @@ def main():
         st.session_state.active_tab = legacy_tab if legacy_tab in tab_options else "Single Sample"
     if "tab_selector" in st.session_state:
         del st.session_state["tab_selector"]
+    if st.session_state.get("active_tab") == "Report":
+        st.session_state.active_tab = "Report Export"
 
     # Auto-switch to Deconvolution tab for C4 method samples.
     # Do not override an explicit user tab choice (e.g., Batch/Time tabs).
@@ -3196,6 +3568,12 @@ def main():
             st.info("Select multiple samples to enable Time Change MS.")
         else:
             time_change_mass_spectra_analysis(sample_list, settings)
+
+    elif active_tab == "Mass Calculator":
+        mass_calculator_tab(sample_list, settings)
+
+    elif active_tab == "Report Export":
+        report_export_tab(sample_list, settings)
 
 
 if __name__ == "__main__":
