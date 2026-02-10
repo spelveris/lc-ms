@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build:
     strategy:
@@ -127,3 +131,4 @@ jobs:
         with:
           name: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-${{ matrix.platform }}
           path: dist/LCMS-Analysis-v${{ steps.app_version.outputs.version }}-${{ matrix.platform }}.zip
+          retention-days: 1

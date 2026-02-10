@@ -35,7 +35,7 @@ Download the app for your platform - no installation required:
 
 ## Web Version
 
-Use the online version (requires ZIP upload): [Open Web App](https://lcms-webapp.streamlit.app)
+Use the online version (requires ZIP upload): [Open Web App](https://lcms-lang.streamlit.app/)
 
 ## Run from Source
 

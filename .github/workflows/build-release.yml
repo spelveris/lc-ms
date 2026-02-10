@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build-macos:
     runs-on: macos-latest
@@ -66,6 +70,7 @@ jobs:
         with:
           name: LCMS-Analysis-macOS
           path: dist/LCMS-Analysis-macOS.zip
+          retention-days: 1
 
   build-windows:
     runs-on: windows-latest
@@ -124,6 +129,7 @@ jobs:
         with:
           name: LCMS-Analysis-Windows
           path: dist/LCMS-Analysis-Windows.zip
+          retention-days: 1
 
   release:
     needs: [build-macos, build-windows]
