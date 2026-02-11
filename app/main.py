@@ -2508,13 +2508,13 @@ def deconvolution_analysis(sample, settings):
                 key=f"ion_sel_pdf_{export_key_base}"
             )
 
-        # Show theoretical m/z for selected mass
-        st.subheader("Theoretical m/z Values")
+        # Show theoretical vs observed m/z for selected mass
+        st.subheader("Charge State Details")
         theo_list = significant_results[:10]
         selected_mass_idx = st.selectbox(
-            "Select mass to view theoretical peaks",
+            "Select component",
             range(len(theo_list)),
-            format_func=lambda i: f"{theo_list[i]['mass']:.2f} Da",
+            format_func=lambda i: f"{theo_list[i]['mass']:.2f} Da ({theo_list[i]['num_charges']} charges)",
             key="theo_mz_mass_select"
         )
 
@@ -2527,13 +2527,39 @@ def deconvolution_analysis(sample, settings):
                 use_monoisotopic_proton=use_mono
             )
 
+            # Build observed lookup from ion data
+            obs_by_charge = {}
+            ion_mzs = selected_result.get('ion_mzs', [])
+            ion_charges = selected_result.get('ion_charges', [])
+            ion_ints = selected_result.get('ion_intensities', [])
+            for mz_val, z, intensity_val in zip(ion_mzs, ion_charges, ion_ints):
+                obs_by_charge[z] = (mz_val, intensity_val)
+
+            max_ion_int = max(ion_ints) if ion_ints else 1.0
+
             theo_data = []
             for t in theoretical:
-                theo_data.append({
-                    'Charge': f"+{t['charge']}",
-                    'm/z': f"{t['mz']:.4f}"
-                })
-            render_text_table(theo_data, list(theo_data[0].keys()) if theo_data else [], max_lines=5)
+                z = t['charge']
+                row = {
+                    'Charge': f"+{z}",
+                    'Theoretical m/z': f"{t['mz']:.4f}",
+                }
+                obs = obs_by_charge.get(z)
+                if obs:
+                    obs_mz, obs_int = obs
+                    delta = obs_mz - t['mz']
+                    rel_pct = obs_int / max_ion_int * 100
+                    row['Observed m/z'] = f"{obs_mz:.4f}"
+                    row['Delta (Da)'] = f"{delta:+.4f}"
+                    row['Intensity'] = f"{obs_int:,.0f}"
+                    row['Rel %'] = f"{rel_pct:.1f}%"
+                else:
+                    row['Observed m/z'] = "—"
+                    row['Delta (Da)'] = "—"
+                    row['Intensity'] = "—"
+                    row['Rel %'] = "—"
+                theo_data.append(row)
+            render_html_table(theo_data)
 
     elif hasattr(st.session_state, 'deconv_results') and results_are_current:
         st.info("No protein masses detected. Try adjusting the parameters or selecting a different time region.")
@@ -2963,6 +2989,11 @@ KNOWN_MODS = {
     'Na adduct': 21.982,
     'K adduct': 37.956,
     'Glucuronidation': 176.032,
+    'Formic acid adduct': 46.005,
+    'TFA adduct': 113.993,
+    'Unknown mod (×1)': 251.30,
+    'Unknown mod (×2)': 502.60,
+    'Unknown mod (×3)': 753.90,
 }
 
 
@@ -2970,33 +3001,47 @@ def mass_calculator_tab(sample_list: list, settings):
     """Mass calculator: compare theoretical vs observed deconvolution masses."""
     st.header("Mass Calculator")
 
-    mode = st.radio("Input mode", ["Amino acid sequence", "Known mass (Da)"], horizontal=True,
-                    key="masscalc_mode")
+    theoretical_masses = []  # list of floats
 
-    theoretical_mass = None
+    user_input = st.text_input("Amino acid sequence or mass(es) (Da), comma-separated",
+                              key="masscalc_input",
+                              placeholder="MQIFVKTLTGKTITLEVEPS…  or  10651.3  or  3497.5, 3748.6, 3999.8")
 
-    if mode == "Amino acid sequence":
-        seq_raw = st.text_area("Paste amino acid sequence (1-letter code)",
-                               height=120, key="masscalc_seq",
-                               placeholder="MQIFVKTLTGKTITLEVEPS...")
-        seq = ''.join(ch.upper() for ch in seq_raw if ch.isalpha())
-        if seq:
-            unknown = sorted({ch for ch in seq if ch not in AA_MASSES})
-            if unknown:
-                st.warning(f"Unknown residue(s): {', '.join(unknown)} — these are ignored.")
-            mass = sum(AA_MASSES.get(ch, 0.0) for ch in seq) + WATER_MASS
-            theoretical_mass = mass
-            st.metric("Theoretical average mass", f"{mass:.2f} Da")
-            st.caption(f"Sequence length: {len(seq)} residues")
-    else:
-        val = st.number_input("Enter known mass (Da)", min_value=0.0, max_value=1_000_000.0,
-                              value=0.0, step=0.01, format="%.2f", key="masscalc_known")
-        if val > 0:
-            theoretical_mass = val
+    if user_input and user_input.strip():
+        stripped = user_input.strip()
+        # Try parsing as comma-separated numbers first
+        parts = [p.strip() for p in stripped.split(",") if p.strip()]
+        parsed_numbers = []
+        for p in parts:
+            try:
+                v = float(p)
+                if v > 0:
+                    parsed_numbers.append(v)
+            except ValueError:
+                parsed_numbers = []
+                break
+        if parsed_numbers:
+            theoretical_masses = parsed_numbers[:10]  # max 10
+            labels = ", ".join(f"{m:.2f}" for m in theoretical_masses)
+            st.metric("Input mass(es)", f"{labels} Da")
+        else:
+            # Treat as amino acid sequence
+            seq = ''.join(ch.upper() for ch in stripped if ch.isalpha())
+            if seq:
+                unknown = sorted({ch for ch in seq if ch not in AA_MASSES})
+                if unknown:
+                    st.warning(f"Unknown residue(s): {', '.join(unknown)} — these are ignored.")
+                mass = sum(AA_MASSES.get(ch, 0.0) for ch in seq) + WATER_MASS
+                theoretical_masses = [mass]
+                st.metric("Theoretical average mass", f"{mass:.2f} Da")
+                st.caption(f"Sequence length: {len(seq)} residues")
 
-    if theoretical_mass is None:
-        st.info("Enter a sequence or mass above to begin.")
+    if not theoretical_masses:
+        st.info("Enter an amino acid sequence or mass(es) in Da above to begin.")
         return
+
+    # Primary theoretical mass (first one) used for modification reference
+    theoretical_mass = theoretical_masses[0]
 
     st.divider()
 
@@ -3012,14 +3057,19 @@ def mass_calculator_tab(sample_list: list, settings):
             custom_mods[cmod_name.strip()] = cmod_mass
 
     # Tolerance for matching
-    tol = st.slider("Matching tolerance (Da)", min_value=0.5, max_value=10.0, value=1.0,
+    tol = st.slider("Matching tolerance (Da)", min_value=0.5, max_value=10.0, value=2.0,
                     step=0.5, key="masscalc_tol")
 
-    # Show modification reference table
-    mod_ref = [{'Modification': k, 'Δm (Da)': f"{v:+.3f}",
-                'Expected mass': f"{theoretical_mass + v:.2f}"}
-               for k, v in custom_mods.items()]
-    st.caption("Known modifications relative to theoretical mass:")
+    # Show modification reference table (both +mod and -mod directions)
+    mod_ref = []
+    for k, v in custom_mods.items():
+        mod_ref.append({'Modification': f"+{k}" if v >= 0 else k,
+                        'Δm (Da)': f"{v:+.3f}",
+                        'Expected mass': f"{theoretical_mass + v:.2f}"})
+        mod_ref.append({'Modification': f"−{k}" if v >= 0 else f"+{k.lstrip('-')}",
+                        'Δm (Da)': f"{-v:+.3f}",
+                        'Expected mass': f"{theoretical_mass - v:.2f}"})
+    st.caption("Known modifications relative to theoretical mass (both directions):")
     render_text_table(mod_ref, ['Modification', 'Δm (Da)', 'Expected mass'])
 
     # Compare against deconv results
@@ -3065,34 +3115,77 @@ def mass_calculator_tab(sample_list: list, settings):
 
     st.caption(f"Comparing against deconvolution results for **{sample.name}**")
 
-    columns = ['Rank', 'Observed (Da)', 'Δm (Da)', 'Rel. Int.', 'Annotation']
+    top_n = st.slider("Number of components to show", min_value=1, max_value=min(20, len(deconv_results)),
+                       value=min(5, len(deconv_results)), step=1, key="masscalc_top_n")
+
+    # Same color palette as the deconvoluted masses figure
+    rank_colors = ['#2ca02c', '#1f77b4', '#ff7f0e', '#d62728', '#9467bd',
+                   '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+    # Build header: if multiple input masses, show "Ref. Mass" column
+    multi = len(theoretical_masses) > 1
+    columns = ['Rank', 'Observed (Da)']
+    if multi:
+        columns.append('Ref. Mass')
+    columns += ['Δm (Da)', 'Rel. Int.', 'Match']
     header_html = "".join(
-        f'<th style="text-align:left; padding:0.45rem 0.6rem; border-bottom:1px solid #666;">{escape(c)}</th>'
+        f'<th style="text-align:left; padding:0.45rem 0.6rem; border-bottom:2px solid #666;">{escape(c)}</th>'
         for c in columns
     )
+
     body_rows = []
-    for i, r in enumerate(deconv_results[:15]):
+    n_matches = 0
+    for i, r in enumerate(deconv_results[:top_n]):
         obs = r['mass']
-        delta = obs - theoretical_mass
-        # Check which modifications could explain the delta
-        annotations = []
-        for mod_name, mod_mass in custom_mods.items():
-            if abs(delta - mod_mass) <= tol:
-                annotations.append(mod_name)
-        if abs(delta) <= tol:
-            annotations.insert(0, "Unmodified")
-        annotation_str = ", ".join(annotations) if annotations else "\u2014"
         rel_int = r['intensity'] / deconv_results[0]['intensity'] * 100
-        is_match = len(annotations) > 0
-        vals = [str(i + 1), f"{obs:.2f}", f"{delta:+.2f}", f"{rel_int:.1f}%", annotation_str]
-        weight = "bold" if is_match else "normal"
-        bg = "rgba(33,92,175,0.10)" if is_match else "transparent"
+        rank_color = rank_colors[i % len(rank_colors)]
+
+        # Find closest theoretical mass for delta calculation
+        best_ref = min(theoretical_masses, key=lambda m: abs(obs - m))
+        delta = obs - best_ref
+
+        # Check annotations against each theoretical mass
+        annotations = []
+        for tm in theoretical_masses:
+            d = obs - tm
+            if abs(d) <= tol:
+                annotations.append("Observed")
+            for mod_name, mod_mass in custom_mods.items():
+                # Match both +mod and -mod (modified or unmodified direction)
+                if abs(d - mod_mass) <= tol:
+                    annotations.append(f"+{mod_name}" if mod_mass >= 0 else mod_name)
+                if abs(d + mod_mass) <= tol:
+                    sign = "−" if mod_mass >= 0 else "+"
+                    annotations.append(f"{sign}{mod_name}")
+        # Deduplicate while preserving order
+        seen = set()
+        unique_annotations = []
+        for a in annotations:
+            if a not in seen:
+                seen.add(a)
+                unique_annotations.append(a)
+
+        is_match = len(unique_annotations) > 0
+        annotation_str = ", ".join(unique_annotations) if unique_annotations else "\u2014"
+        vals = [str(i + 1), f"{obs:.2f}"]
+        if multi:
+            vals.append(f"{best_ref:.2f}")
+        vals += [f"{delta:+.2f}", f"{rel_int:.1f}%", annotation_str]
+
+        if is_match:
+            n_matches += 1
+            color = rank_color
+            weight = "bold"
+        else:
+            color = "#666"
+            weight = "normal"
+
         cells = "".join(
             f'<td style="padding:0.40rem 0.6rem; border-bottom:1px solid #3f3f3f; '
-            f'font-weight:{weight};">{escape(v)}</td>'
+            f'font-weight:{weight}; color:{color};">{escape(v)}</td>'
             for v in vals
         )
-        body_rows.append(f'<tr style="background:{bg};">{cells}</tr>')
+        body_rows.append(f'<tr>{cells}</tr>')
 
     table_html = (
         '<table style="width:100%; border-collapse:collapse; font-size:0.92rem;">'
@@ -3103,16 +3196,22 @@ def mass_calculator_tab(sample_list: list, settings):
     st.markdown(f'<div style="overflow-x:auto; padding:0;">{table_html}</div>',
                 unsafe_allow_html=True)
 
+    mass_str = ", ".join(f"{m:.2f}" for m in theoretical_masses)
+    if n_matches:
+        st.success(f"Found {n_matches} matching component(s) within {tol:.1f} Da tolerance.")
+    else:
+        st.warning(f"No components found within {tol:.1f} Da of {mass_str} Da.")
+
     # Deconvoluted masses figure with theoretical mass reference line
     st.divider()
-    display_results = deconv_results[:10]
+    display_results = deconv_results[:top_n]
     fig_style = {
         'fig_width': settings['fig_width'],
         'show_grid': False,
         'deconv_x_min_da': settings['deconv_x_min_da'],
         'deconv_x_max_da': settings['deconv_x_max_da'],
         'deconv_show_obs_calc': True,
-        'deconv_calc_mass_da': theoretical_mass,
+        'deconv_calc_mass_da': theoretical_masses if len(theoretical_masses) > 1 else theoretical_mass,
     }
     fig_calc = create_deconvoluted_masses_figure(sample.name, display_results, fig_style)
     st.pyplot(fig_calc, use_container_width=True)
@@ -3144,7 +3243,7 @@ def mass_calculator_tab(sample_list: list, settings):
         'deconv_x_min_da': settings['deconv_x_min_da'],
         'deconv_x_max_da': settings['deconv_x_max_da'],
         'deconv_show_obs_calc': True,
-        'deconv_calc_mass_da': theoretical_mass,
+        'deconv_calc_mass_da': theoretical_masses if len(theoretical_masses) > 1 else theoretical_mass,
         'deconv_show_peak_labels': False,
     }
     fig_clean = create_deconvoluted_masses_figure(sample.name, display_results, fig_style_clean)
@@ -3266,6 +3365,9 @@ def report_export_tab(sample_list: list, settings):
                         eic_smoothing=settings['eic_smoothing'],
                     )
                     fig_chrom.set_size_inches(A4_W, A4_H)
+                    if fig_chrom._suptitle:
+                        fig_chrom._suptitle.set_y(0.98)
+                    fig_chrom.subplots_adjust(top=0.93)
                     pdf.savefig(fig_chrom)
                     plt.close(fig_chrom)
 
@@ -3286,6 +3388,9 @@ def report_export_tab(sample_list: list, settings):
                         display_results, deconv_style
                     )
                     fig_deconv.set_size_inches(A4_W, A4_H)
+                    if fig_deconv._suptitle:
+                        fig_deconv._suptitle.set_y(0.98)
+                    fig_deconv.subplots_adjust(top=0.93)
                     pdf.savefig(fig_deconv)
                     plt.close(fig_deconv)
 
@@ -3304,6 +3409,9 @@ def report_export_tab(sample_list: list, settings):
                             display_results, ion_style
                         )
                         fig_ions.set_size_inches(A4_W, A4_H)
+                        if fig_ions._suptitle:
+                            fig_ions._suptitle.set_y(0.98)
+                        fig_ions.subplots_adjust(top=0.93)
                         pdf.savefig(fig_ions)
                         plt.close(fig_ions)
 
@@ -3421,7 +3529,6 @@ def main():
     active_tab = st.radio(
         "Analysis",
         tab_options,
-        index=tab_options.index(st.session_state.active_tab),
         horizontal=True,
         key="active_tab",
         label_visibility="collapsed"

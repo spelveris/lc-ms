@@ -784,7 +784,7 @@ def _plot_deconvoluted_masses_panel(
     x_max_da: float = 50000.0,
     subtitle: Optional[str] = None,
     show_obs_calc: bool = False,
-    calc_mass_da: Optional[float] = None,
+    calc_mass_da=None,
     show_peak_labels: bool = True,
 ) -> None:
     """Render deconvoluted masses as a vertical-line spectrum on the given axis."""
@@ -989,32 +989,47 @@ def _plot_deconvoluted_masses_panel(
 
         # Optional top-peak summary annotation for publication-style figures.
         # Place it to the right of the most intense peak without touching bars.
-        if show_obs_calc and len(masses_kda) > 0:
+        if show_obs_calc and len(masses_kda) > 0 and calc_mass_da is not None:
+            # Normalize calc_mass_da to a list
+            if isinstance(calc_mass_da, (int, float)):
+                calc_masses = [float(calc_mass_da)]
+            else:
+                calc_masses = [float(m) for m in calc_mass_da]
+
             top_idx = int(np.argmax(norm_intensities))
             top_x = masses_kda[top_idx]
             top_y = float(norm_intensities[top_idx])
             x_span = max(1e-6, (x_max - x_min))
             ann_x = min(x_max - 0.02 * x_span, top_x + 0.04 * x_span)
             ann_y = min(108.0, max(24.0, top_y * 0.84))
-
-            # Render calc/obs labels and values. Labels are placed in data
-            # coords; values use a fixed point offset so they align in Arial.
-            calc_val = f"{calc_mass_da:.1f}" if calc_mass_da is not None else "-"
-            obs_val = f"{masses[top_idx]:.1f}"
-            obs_color = label_colors[top_idx % len(label_colors)]
             pt_offset = 20  # points to the right of label anchor
 
-            for row, (lbl, val, color) in enumerate([
-                ("calc:", calc_val, "black"),
-                ("obs:",  obs_val,  obs_color),
-            ]):
-                row_y = ann_y - row * 8.0
-                ax_deconv.text(ann_x, row_y, lbl, ha='left', va='bottom',
-                               fontsize=8, fontweight='bold', color=color)
-                ax_deconv.annotate(val, xy=(ann_x, row_y),
-                                   xytext=(pt_offset, 0), textcoords='offset points',
-                                   ha='left', va='bottom',
-                                   fontsize=8, fontweight='bold', color=color)
+            row = 0
+            for cm in calc_masses:
+                # Find best matching deconv result for this calc mass
+                match_idx = int(np.argmin([abs(m - cm) for m in masses]))
+                match_delta = abs(masses[match_idx] - cm)
+
+                calc_val = f"{cm:.1f}"
+                if match_delta <= 5.0:
+                    obs_val = f"{masses[match_idx]:.1f}"
+                    obs_color = label_colors[match_idx % len(label_colors)]
+                else:
+                    obs_val = "—"
+                    obs_color = "#888"
+
+                for lbl, val, lbl_color, val_color in [
+                    ("calc:", calc_val, "black", "black"),
+                    ("obs:",  obs_val,  "black", obs_color),
+                ]:
+                    row_y = ann_y - row * 8.0
+                    ax_deconv.text(ann_x, row_y, lbl, ha='left', va='bottom',
+                                   fontsize=8, fontweight='bold', color=lbl_color)
+                    ax_deconv.annotate(val, xy=(ann_x, row_y),
+                                       xytext=(pt_offset, 0), textcoords='offset points',
+                                       ha='left', va='bottom',
+                                       fontsize=8, fontweight='bold', color=val_color)
+                    row += 1
 
         ax_deconv.set_xlabel("Mass (kDa)")
         ax_deconv.set_ylabel("Relative Intensity (%)")
