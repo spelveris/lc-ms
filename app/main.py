@@ -136,6 +136,7 @@ from plotting import (
     create_eic_comparison_figure,
     create_deconvolution_figure,
     create_deconvoluted_masses_figure,
+    create_ion_selection_figure,
     create_mass_spectrum_figure,
     create_report_info_page,
     export_figure,
@@ -725,7 +726,7 @@ def _run_default_deconvolution(mz: np.ndarray, intensity: np.ndarray) -> list[di
     """Run deconvolution with the default non-expert settings."""
     # Defaults aligned with the main deconvolution view.
     pwhh = 0.6
-    mw_agreement_pct = 0.03
+    mw_agreement_pct = 0.02
     noise_cutoff = 1000.0
     abundance_cutoff_pct = 5.0
     mw_assign_cutoff_pct = 40.0
@@ -2119,7 +2120,7 @@ def deconvolution_analysis(sample, settings):
 
     # Defaults for Local LC-MS machine-like parameters
     pwhh = 0.6
-    mw_agreement_pct = 0.03           # Default: 0.03%
+    mw_agreement_pct = 0.02           # Default: 0.02%
     noise_cutoff = 1000.0             # Default: 1000 counts
     abundance_cutoff_pct = 5.0        # Default: 5%
     mw_assign_cutoff_pct = 40.0       # Default: 40%
@@ -2219,8 +2220,8 @@ def deconvolution_analysis(sample, settings):
             if method == "Local LC-MS machine-like":
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    mw_agreement_pct = st.number_input("MW agreement (%)", min_value=0.001, max_value=5.0, value=0.03, step=0.01,
-                                                       help="Default: 0.03%")
+                    mw_agreement_pct = st.number_input("MW agreement (%)", min_value=0.001, max_value=5.0, value=0.02, step=0.01,
+                                                       help="Default: 0.02%")
                 with col2:
                     abundance_cutoff_pct = st.number_input("Abundance cutoff (%)", min_value=0.0, max_value=100.0, value=5.0, step=1.0,
                                                            help="Default: 5%")
@@ -2471,6 +2472,40 @@ def deconvolution_analysis(sample, settings):
                 file_name=f"{sample.name}_deconvoluted_masses.pdf",
                 mime="application/pdf",
                 key=f"deconv_only_pdf_{export_key_base}"
+            )
+
+        # Ion selection figure — shows which m/z peaks were used per component
+        st.subheader("Ion Selection per Component")
+        fig_ions = create_ion_selection_figure(mz, intensity, display_results, style)
+        st.pyplot(fig_ions, use_container_width=True)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            png_ions = export_figure(fig_ions, dpi=settings['export_dpi'])
+            st.download_button(
+                label="Download PNG (ion selection)",
+                data=png_ions,
+                file_name=f"{sample.name}_ion_selection.png",
+                mime="image/png",
+                key=f"ion_sel_png_{export_key_base}"
+            )
+        with col2:
+            svg_ions = export_figure_svg(fig_ions)
+            st.download_button(
+                label="Download SVG (ion selection)",
+                data=svg_ions,
+                file_name=f"{sample.name}_ion_selection.svg",
+                mime="image/svg+xml",
+                key=f"ion_sel_svg_{export_key_base}"
+            )
+        with col3:
+            pdf_ions = export_figure_pdf(fig_ions, dpi=settings['export_dpi'])
+            st.download_button(
+                label="Download PDF (ion selection)",
+                data=pdf_ions,
+                file_name=f"{sample.name}_ion_selection.pdf",
+                mime="application/pdf",
+                key=f"ion_sel_pdf_{export_key_base}"
             )
 
         # Show theoretical m/z for selected mass
@@ -3253,6 +3288,24 @@ def report_export_tab(sample_list: list, settings):
                     fig_deconv.set_size_inches(A4_W, A4_H)
                     pdf.savefig(fig_deconv)
                     plt.close(fig_deconv)
+
+                    # Page 4: Ion selection per component
+                    report_mz, report_intensity = sum_spectra_in_range(
+                        sample, deconv_time_range[0], deconv_time_range[1]
+                    )
+                    if report_mz is not None and len(report_mz) > 0:
+                        ion_style = {
+                            'fig_width': A4_W - 0.8,
+                            'line_width': settings['line_width'],
+                            'show_grid': True,
+                        }
+                        fig_ions = create_ion_selection_figure(
+                            report_mz, report_intensity,
+                            display_results, ion_style
+                        )
+                        fig_ions.set_size_inches(A4_W, A4_H)
+                        pdf.savefig(fig_ions)
+                        plt.close(fig_ions)
 
             buf.seek(0)
             date_str = datetime.date.today().strftime("%Y%m%d")

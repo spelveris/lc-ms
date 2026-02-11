@@ -1224,6 +1224,99 @@ def create_deconvoluted_masses_figure(
     return fig
 
 
+def create_ion_selection_figure(
+    mz: np.ndarray,
+    intensity: np.ndarray,
+    deconv_results: list,
+    style: dict = None,
+) -> matplotlib.figure.Figure:
+    """Create a figure showing the m/z spectrum with colored markers for each
+    deconvoluted component's selected ions (Agilent-style peak assignment).
+
+    Args:
+        mz: Raw m/z array of the summed spectrum.
+        intensity: Raw intensity array of the summed spectrum.
+        deconv_results: Deconvolution results containing ``ion_mzs``,
+            ``ion_charges``, and ``ion_intensities`` per component.
+        style: Style settings dict.
+
+    Returns:
+        Matplotlib Figure.
+    """
+    style = style or {}
+    fig_width = style.get('fig_width', 12)
+    line_width = style.get('line_width', 0.8)
+    show_grid = style.get('show_grid', True)
+
+    colors = ['#2ca02c', '#1f77b4', '#ff7f0e', '#d62728', '#9467bd',
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+    n_results = len(deconv_results)
+    if n_results == 0:
+        fig, ax = plt.subplots(1, 1, figsize=(fig_width, 3))
+        ax.text(0.5, 0.5, 'No results', ha='center', va='center', transform=ax.transAxes)
+        return fig
+
+    fig, axes = plt.subplots(n_results, 1, figsize=(fig_width, 2.2 * n_results),
+                             sharex=True, squeeze=False)
+
+    max_int = float(np.max(intensity)) if len(intensity) > 0 else 1.0
+
+    for idx, r in enumerate(deconv_results):
+        ax = axes[idx, 0]
+        color = colors[idx % len(colors)]
+
+        # Draw full spectrum in light gray
+        ax.plot(mz, intensity, color='#cccccc', linewidth=0.5, zorder=1)
+
+        # Highlight selected ion peaks
+        ion_mzs = r.get('ion_mzs', [])
+        ion_charges = r.get('ion_charges', [])
+        ion_ints = r.get('ion_intensities', [])
+
+        if ion_mzs:
+            # For each ion, draw a colored line from 0 to its intensity on the
+            # raw spectrum (interpolated).
+            for mz_val, z, ion_int in zip(ion_mzs, ion_charges, ion_ints):
+                # Interpolate intensity at this m/z from the raw spectrum
+                raw_int = float(np.interp(mz_val, mz, intensity))
+                ax.vlines(mz_val, 0, raw_int, color=color, linewidth=1.5, zorder=3)
+                # Label with charge state
+                ax.annotate(
+                    f"z={z}",
+                    xy=(mz_val, raw_int),
+                    xytext=(0, 3),
+                    textcoords='offset points',
+                    ha='center', fontsize=6,
+                    color=color, fontweight='bold',
+                    zorder=4,
+                )
+
+        # Title with mass and charge range
+        mass_val = r['mass']
+        if mass_val >= 10000:
+            mass_str = f"{mass_val:.1f}"
+        else:
+            mass_str = f"{mass_val:.2f}"
+        charges = r.get('charge_states', [])
+        rel_pct = r['intensity'] / deconv_results[0]['intensity'] * 100 if deconv_results[0]['intensity'] > 0 else 0
+        charge_str = f"z={min(charges)}-{max(charges)}" if len(charges) > 1 else f"z={charges[0]}" if charges else ""
+        ax.set_title(f"{mass_str} Da  ({charge_str}, {rel_pct:.0f}%)", fontsize=8,
+                     fontweight='bold', color=color, loc='left')
+
+        ax.set_ylabel("Intensity", fontsize=7)
+        ax.set_ylim(0, max_int * 1.15)
+        ax.ticklabel_format(axis='y', style='scientific', scilimits=(0, 0), useMathText=True)
+        _shift_sci_offset_left(ax)
+        if show_grid:
+            ax.grid(True, alpha=0.2)
+
+    axes[-1, 0].set_xlabel("m/z")
+    fig.suptitle("Ion Selection per Component", fontsize=10, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    return fig
+
+
 def create_report_info_page(
     sample_name: str,
     acq_method: Optional[str],

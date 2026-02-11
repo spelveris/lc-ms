@@ -592,13 +592,31 @@ def deconvolute_protein(mz: np.ndarray, intensity: np.ndarray,
         unique_charges = sorted(set(group_charges))
         total_intensity = sum(group_intensities)
 
+        # Collect unique m/z values used for this component
+        group_mzs = []
+        group_mz_charges = []
+        group_mz_ints = []
+        seen_mz = set()
+        for idx in group_indices:
+            c = candidate_masses[idx]
+            for mz_val in (c['mz1'], c['mz2']):
+                mz_key = round(mz_val, 2)
+                if mz_key not in seen_mz:
+                    seen_mz.add(mz_key)
+                    group_mzs.append(mz_val)
+                    group_mz_charges.append(c['charge'])
+                    group_mz_ints.append(c['intensity'])
+
         results.append({
             'mass': median_mass,
             'mass_std': std_mass,
             'charge_states': unique_charges,
             'num_charges': len(unique_charges),
             'intensity': total_intensity,
-            'peaks_found': len(group_indices)
+            'peaks_found': len(group_indices),
+            'ion_mzs': group_mzs,
+            'ion_charges': group_mz_charges,
+            'ion_intensities': group_mz_ints,
         })
 
     # Sort by number of charge states first, then intensity
@@ -1046,10 +1064,17 @@ def deconvolute_protein_local_lcms_machine_like(
                         'num_charges': len(set(i['charge'] for i in ions)),
                         'intensity': float(sum(i['intensity'] for i in ions)),
                         'peaks_found': len(ions),
-                        'r2': candidate['r2']
+                        'r2': candidate['r2'],
+                        'ion_mzs': [i['mz'] for i in ions],
+                        'ion_charges': [i['charge'] for i in ions],
+                        'ion_intensities': [i['intensity'] for i in ions],
                     }
                 else:
+                    ions_fb = candidate.get('_ions', [])
                     result = {k: v for k, v in candidate.items() if not k.startswith('_')}
+                    result['ion_mzs'] = [i['mz'] for i in ions_fb]
+                    result['ion_charges'] = [i['charge'] for i in ions_fb]
+                    result['ion_intensities'] = [i['intensity'] for i in ions_fb]
 
                 results.append(result)
                 used_ions.update(ion_indices)
@@ -1152,7 +1177,11 @@ def deconvolute_protein_local_lcms_machine_like(
                     mass_dup = True
                     break
             if not mass_dup:
+                ions_r = rc.get('_ions', [])
                 result = {k: v for k, v in rc.items() if not k.startswith('_')}
+                result['ion_mzs'] = [i['mz'] for i in ions_r]
+                result['ion_charges'] = [i['charge'] for i in ions_r]
+                result['ion_intensities'] = [i['intensity'] for i in ions_r]
                 results.append(result)
                 used_residual.update(rc_indices)
 
@@ -1254,7 +1283,10 @@ def detect_singly_charged(
             'intensity': p['intensity'],
             'peaks_found': 1,
             'r2': 1.0,
-            'mz': p['mz']
+            'mz': p['mz'],
+            'ion_mzs': [p['mz']],
+            'ion_charges': [1],
+            'ion_intensities': [p['intensity']],
         })
 
     # Sort by intensity
