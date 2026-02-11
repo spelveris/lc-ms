@@ -639,50 +639,6 @@ def _detect_deconvolution_window(sample) -> tuple[float, float]:
     return auto_start, auto_end
 
 
-def _longest_contiguous_run(charges: list[int]) -> int:
-    """Return longest run of consecutive charge states."""
-    if not charges:
-        return 0
-    charge_list = sorted(set(int(c) for c in charges))
-    longest = 1
-    current = 1
-    for i in range(1, len(charge_list)):
-        if charge_list[i] == charge_list[i - 1] + 1:
-            current += 1
-            longest = max(longest, current)
-        else:
-            current = 1
-    return longest
-
-
-def _is_trustworthy_protein_component(result: dict) -> bool:
-    """Heuristic used by default profile switching."""
-    charge_states = result.get("charge_states", [])
-    num_charges = len(set(charge_states))
-    if num_charges < 8:
-        return False
-    longest = _longest_contiguous_run(charge_states)
-    return longest >= 6 and (longest / num_charges) >= 0.60
-
-
-def _needs_low_mw_profile(primary_results: list[dict]) -> bool:
-    """Decide whether to switch to low-MW fallback profile."""
-    if not primary_results:
-        return True
-
-    ranked = sorted(primary_results, key=lambda x: x.get("intensity", 0.0), reverse=True)
-    top = ranked[:3]
-    top_intensity = float(top[0].get("intensity", 0.0)) if top else 0.0
-    if top_intensity <= 0:
-        return True
-
-    for result in top:
-        rel_intensity = float(result.get("intensity", 0.0)) / top_intensity
-        if rel_intensity >= 0.25 and _is_trustworthy_protein_component(result):
-            return False
-    return True
-
-
 def _run_local_machine_protein_profile(
     mz: np.ndarray,
     intensity: np.ndarray,
@@ -741,15 +697,9 @@ def _run_local_machine_auto_profile(
     contig_min: int,
     use_mz_agreement: bool,
     use_monoisotopic: bool,
-    allow_auto_fallback: bool,
+    allow_auto_fallback: bool = False,
 ) -> tuple[list[dict], str]:
-    """
-    Run local-machine deconvolution with default auto profile logic.
-
-    Flow in auto mode:
-    1) protein profile at configured max charge (default 50)
-    2) if weak/untrustworthy, switch to low-MW fallback profile
-    """
+    """Run local-machine deconvolution (single pass)."""
     results = _run_local_machine_protein_profile(
         mz,
         intensity,
@@ -768,50 +718,22 @@ def _run_local_machine_auto_profile(
         use_mz_agreement=use_mz_agreement,
         use_monoisotopic=use_monoisotopic,
     )
-    profile_note = "Profile: Protein (auto)"
-
-    if allow_auto_fallback and _needs_low_mw_profile(results):
-        low_profile_min = max(low_mw, 2000.0)
-        low_profile_max = min(high_mw, 10000.0)
-        if low_profile_min < low_profile_max:
-            low_results = deconvolute_protein_local_lcms_machine_like(
-                mz,
-                intensity,
-                min_charge=2,
-                max_charge=8,
-                min_peaks=max(3, int(min_peaks)),
-                noise_cutoff=noise_cutoff,
-                abundance_cutoff=min(abundance_cutoff_pct / 100.0, 0.05),
-                mw_agreement=mw_agreement_pct / 100.0,
-                mw_assign_cutoff=mw_assign_cutoff_pct / 100.0,
-                envelope_cutoff=envelope_cutoff_pct / 100.0,
-                pwhh=pwhh,
-                low_mw=low_profile_min,
-                high_mw=low_profile_max,
-                contig_min=2,
-                use_mz_agreement=use_mz_agreement,
-                use_monoisotopic_proton=use_monoisotopic,
-            )
-            if low_results:
-                results = low_results
-                profile_note = "Profile: Low MW (auto fallback)"
-
-    return results, profile_note
+    return results, ""
 
 
 def _run_default_deconvolution(mz: np.ndarray, intensity: np.ndarray) -> list[dict]:
     """Run deconvolution with the default non-expert settings."""
     # Defaults aligned with the main deconvolution view.
     pwhh = 0.6
-    mw_agreement_pct = 0.05
+    mw_agreement_pct = 0.03
     noise_cutoff = 1000.0
-    abundance_cutoff_pct = 10.0
+    abundance_cutoff_pct = 5.0
     mw_assign_cutoff_pct = 40.0
     envelope_cutoff_pct = 50.0
     contig_min = 3
     low_mw = 500.0
     high_mw = 50000.0
-    min_charge = 5
+    min_charge = 1
     max_charge = 50
 
     results, _ = _run_local_machine_auto_profile(
@@ -2195,12 +2117,11 @@ def deconvolution_analysis(sample, settings):
     # Deconvolution method — default to Local LC-MS machine-like for best accuracy
     method = "Local LC-MS machine-like"
 
-    # Defaults for Local LC-MS machine-like parameters - matched to system default values
-    # From PDF: MW Agreement 0.05%, Noise 1000, Abundance 10%, MW Assign 40%, Envelope 50%
+    # Defaults for Local LC-MS machine-like parameters
     pwhh = 0.6
-    mw_agreement_pct = 0.05           # Default: 0.05%
+    mw_agreement_pct = 0.03           # Default: 0.03%
     noise_cutoff = 1000.0             # Default: 1000 counts
-    abundance_cutoff_pct = 10.0       # Default: 10%
+    abundance_cutoff_pct = 5.0        # Default: 5%
     mw_assign_cutoff_pct = 40.0       # Default: 40%
     envelope_cutoff_pct = 50.0        # Default: 50%
     contig_min = 3
@@ -2212,7 +2133,7 @@ def deconvolution_analysis(sample, settings):
     mass_tolerance = 1.0
     low_mw = 500
     high_mw = 50000
-    min_charge = 5
+    min_charge = 1
     max_charge = 50
 
     # Display settings (outside expander for easy access)
@@ -2241,7 +2162,7 @@ def deconvolution_analysis(sample, settings):
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            min_charge = st.number_input("Min charge", min_value=1, max_value=100, value=5)
+            min_charge = st.number_input("Min charge", min_value=1, max_value=100, value=1)
         with col2:
             max_charge = st.number_input("Max charge", min_value=1, max_value=100, value=50)
         with col3:
@@ -2298,11 +2219,11 @@ def deconvolution_analysis(sample, settings):
             if method == "Local LC-MS machine-like":
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    mw_agreement_pct = st.number_input("MW agreement (%)", min_value=0.001, max_value=5.0, value=0.05, step=0.01,
-                                                       help="Default: 0.05%")
+                    mw_agreement_pct = st.number_input("MW agreement (%)", min_value=0.001, max_value=5.0, value=0.03, step=0.01,
+                                                       help="Default: 0.03%")
                 with col2:
-                    abundance_cutoff_pct = st.number_input("Abundance cutoff (%)", min_value=0.0, max_value=100.0, value=10.0, step=1.0,
-                                                           help="Default: 10%")
+                    abundance_cutoff_pct = st.number_input("Abundance cutoff (%)", min_value=0.0, max_value=100.0, value=5.0, step=1.0,
+                                                           help="Default: 5%")
                 with col3:
                     mw_assign_cutoff_pct = st.number_input("MW assign cutoff (%)", min_value=0.0, max_value=100.0, value=40.0, step=1.0,
                                                            help="Default: 40%")
@@ -2321,52 +2242,6 @@ def deconvolution_analysis(sample, settings):
                     value=False,
                     help="Use monoisotopic proton mass (1.007276) instead of average (1.00784). Try toggling if masses are ~1-2 Da off."
                 )
-
-    def _longest_contiguous_run(charges):
-        """Return longest run of consecutive charge states."""
-        if not charges:
-            return 0
-        charge_list = sorted(set(int(c) for c in charges))
-        longest = 1
-        current = 1
-        for i in range(1, len(charge_list)):
-            if charge_list[i] == charge_list[i - 1] + 1:
-                current += 1
-                longest = max(longest, current)
-            else:
-                current = 1
-        return longest
-
-    def _is_trustworthy_protein_component(result):
-        """Heuristic: protein envelopes should have many contiguous charges."""
-        charge_states = result.get('charge_states', [])
-        num_charges = len(set(charge_states))
-        if num_charges < 8:
-            return False
-        longest = _longest_contiguous_run(charge_states)
-        return longest >= 6 and (longest / num_charges) >= 0.60
-
-    def _needs_low_mw_profile(primary_results):
-        """
-        Decide whether to switch from default protein profile to low-MW profile.
-
-        If no strong, trustworthy protein envelope appears in top results, run a
-        low-MW fallback profile (charges 2-8).
-        """
-        if not primary_results:
-            return True
-
-        ranked = sorted(primary_results, key=lambda x: x.get('intensity', 0.0), reverse=True)
-        top = ranked[:3]
-        top_intensity = float(top[0].get('intensity', 0.0)) if top else 0.0
-        if top_intensity <= 0:
-            return True
-
-        for result in top:
-            rel_intensity = float(result.get('intensity', 0.0)) / top_intensity
-            if rel_intensity >= 0.25 and _is_trustworthy_protein_component(result):
-                return False
-        return True
 
     def run_deconvolution():
         with st.spinner("Running deconvolution..."):
@@ -2389,8 +2264,6 @@ def deconvolution_analysis(sample, settings):
                     contig_min=int(contig_min),
                     use_mz_agreement=bool(use_mz_agreement),
                     use_monoisotopic=bool(use_monoisotopic),
-                    # Keep manual/expert runs explicit: no auto profile switching.
-                    allow_auto_fallback=not expert_mode,
                 )
             else:
                 results = deconvolute_protein(

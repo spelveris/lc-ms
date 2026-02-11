@@ -1,10 +1,14 @@
-name: Build Desktop Apps
+name: Build Desktop Apps (Main)
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+
+concurrency:
+  group: lcms-desktop-builds
+  cancel-in-progress: false
 
 permissions:
   contents: read
