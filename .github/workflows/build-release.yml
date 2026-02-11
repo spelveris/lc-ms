@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Read app version
+        id: app_version
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building app version: $VERSION"
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -67,19 +75,27 @@ jobs:
       - name: Create ZIP
         run: |
           cd dist
-          zip -r LCMS-Analysis-macOS.zip LCMS-Analysis
+          zip -r LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS.zip LCMS-Analysis
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LCMS-Analysis-macOS
-          path: dist/LCMS-Analysis-macOS.zip
+          name: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS
+          path: dist/LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS.zip
           retention-days: 1
 
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Read app version
+        id: app_version
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building app version: $VERSION"
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -126,13 +142,13 @@ jobs:
           Get-ChildItem -Path dist\LCMS-Analysis -Recurse -Force -Filter '._*' | Remove-Item -Force
       
       - name: Create ZIP
-        run: Compress-Archive -Path dist\LCMS-Analysis -DestinationPath dist\LCMS-Analysis-Windows.zip
+        run: Compress-Archive -Path dist\LCMS-Analysis -DestinationPath dist\LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows.zip
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LCMS-Analysis-Windows
-          path: dist/LCMS-Analysis-Windows.zip
+          name: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows
+          path: dist/LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows.zip
           retention-days: 1
 
   release:
@@ -142,36 +158,41 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Read app version
+        id: app_version
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing app version: $VERSION"
+
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: LCMS-Analysis-macOS
+          name: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS
 
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: LCMS-Analysis-Windows
+          name: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows
 
       - name: List files
         run: ls -la
-
-      - name: Create versioned asset copies
-        run: |
-          cp LCMS-Analysis-macOS.zip LCMS-Analysis-${{ github.ref_name }}-macOS.zip
-          cp LCMS-Analysis-Windows.zip LCMS-Analysis-${{ github.ref_name }}-Windows.zip
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            LCMS-Analysis-${{ github.ref_name }}-macOS.zip
-            LCMS-Analysis-${{ github.ref_name }}-Windows.zip
+            LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS.zip
+            LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows.zip
           body: |
             ## LC-MS Analysis Desktop App
 
             Download the ZIP for your platform:
-            - **macOS**: LCMS-Analysis-${{ github.ref_name }}-macOS.zip
-            - **Windows**: LCMS-Analysis-${{ github.ref_name }}-Windows.zip
+            - **macOS**: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS.zip
+            - **Windows**: LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows.zip
 
             ### Installation
 
