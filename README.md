@@ -13,7 +13,10 @@ This project is from the ETH Zürich group listed here:
 - **Mass Spectrometry**: Total Ion Chromatogram (TIC) and Extracted Ion Chromatograms (EIC)
 - **Protein Deconvolution**: Local LC-MS machine-like neutral-mass deconvolution from charge envelopes
 - **Time Progression**: Compare 2+ samples with color-coded overlays
+- **Time Change MS**: Overlay summed mass spectra across 2+ samples
 - **Batch Deconvolution**: Run default deconvolution across multiple samples
+- **Mass Calculator**: Compare calculated and observed masses, annotate modifications
+- **Report Export**: Generate multi-page PDF reports
 - **Export**: Download plots as PNG (300 DPI), SVG, or PDF
 
 ## Download Desktop App
@@ -22,8 +25,12 @@ Download the app for your platform - no installation required:
 
 | Platform | Download |
 |----------|----------|
-| **macOS** | [LCMS-Analysis-macOS.zip](../../releases/latest/download/LCMS-Analysis-macOS.zip) |
-| **Windows** | [LCMS-Analysis-Windows.zip](../../releases/latest/download/LCMS-Analysis-Windows.zip) |
+| **macOS** | [Latest Release Assets](../../releases/latest) |
+| **Windows** | [Latest Release Assets](../../releases/latest) |
+
+Release ZIP names include the version, for example:
+- `LCMS-Analysis-v1.8.1-macOS.zip`
+- `LCMS-Analysis-v1.8.1-Windows.zip`
 
 ### Installation
 
@@ -40,8 +47,8 @@ Use the online version (requires ZIP upload): [Open Web App](https://lcms-lang.s
 ## Run from Source
 
 ```bash
-git clone https://github.com/dspelveris/lcms-webapp.git
-cd lcms-webapp
+git clone https://github.com/spelveris/lc-ms.git
+cd lc-ms
 pip install -r requirements.txt
 streamlit run app/main.py
 ```
@@ -64,8 +71,9 @@ streamlit run app/main.py
 - Spectrum extraction: Average (sum)
 - Show top N masses: 5
 - Deconvolution MW range: 500 to 50000 Da
-- Deconvolution charge range: 5 to 50
+- Deconvolution charge range: 1 to 50
 - Deconvolution noise cutoff: 1000 counts
+- Min contiguous charges: 3
 - Include singly-charged ions (z=1): off by default
 
 ## Usage
