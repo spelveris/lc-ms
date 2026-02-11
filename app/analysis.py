@@ -827,6 +827,7 @@ def deconvolute_protein_local_lcms_machine_like(
     contig_min: int = 3,
     use_mz_agreement: bool = False,
     use_monoisotopic_proton: bool = False,
+    max_overlap: float = 0.0,
 ) -> list[dict]:
     """
     Local LC-MS machine-like deconvolution workflow:
@@ -1017,12 +1018,11 @@ def deconvolute_protein_local_lcms_machine_like(
     # Sort candidates by quality: num_charges (desc), then intensity (desc)
     all_candidates.sort(key=lambda x: (x['num_charges'], x['intensity']), reverse=True)
 
-    # Deferred selection: pick best candidates allowing significant ion sharing.
-    # Different-mass species genuinely share m/z peaks at different charge states,
-    # so we use a generous overlap allowance and rely on mass uniqueness instead.
+    # Deferred selection: pick best candidates, each peak used at most once.
+    # Once a peak is claimed by a selected component it is unavailable to
+    # later candidates (Agilent-style exclusive peak assignment).
     results = []
     used_ions = set()
-    MAX_OVERLAP = 0.50  # Allow 50% ion overlap — species share peaks at different z
 
     for candidate in all_candidates:
         ion_indices = candidate['_ion_indices']
@@ -1033,7 +1033,7 @@ def deconvolute_protein_local_lcms_machine_like(
         overlap_count = len(ion_indices & used_ions)
         overlap_ratio = overlap_count / len(ion_indices)
 
-        if overlap_ratio <= MAX_OVERLAP:
+        if overlap_ratio <= max_overlap:
             # Check if this mass is too close to an already-selected mass
             # AND has overlapping charge state ranges (same mass + same charges = true duplicate)
             cand_charges = set(candidate['charge_states'])
@@ -1169,7 +1169,7 @@ def deconvolute_protein_local_lcms_machine_like(
         for rc in residual_candidates:
             rc_indices = rc['_ion_indices']
             overlap_count = len(rc_indices & used_residual)
-            if len(rc_indices) > 0 and overlap_count / len(rc_indices) > 0.50:
+            if len(rc_indices) > 0 and overlap_count / len(rc_indices) > max_overlap:
                 continue
             mass_dup = False
             for r in results:
