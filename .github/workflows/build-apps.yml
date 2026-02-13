@@ -139,6 +139,64 @@ jobs:
               print(f"Removing: {f}")
               f.unlink()
 
+      - name: Smoke test app startup (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          APP_BIN="dist/LCMS-Analysis/LCMS-Analysis"
+          "$APP_BIN" > app_stdout.log 2> app_stderr.log &
+          APP_PID=$!
+          echo "Launched PID: $APP_PID"
+          for i in {1..60}; do
+            if curl -fsS "http://127.0.0.1:8501/_stcore/health" >/dev/null; then
+              echo "Health check passed"
+              kill "$APP_PID" || true
+              wait "$APP_PID" || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Health check failed"
+          tail -n 200 app_stdout.log || true
+          tail -n 200 app_stderr.log || true
+          kill "$APP_PID" || true
+          wait "$APP_PID" || true
+          exit 1
+
+      - name: Smoke test app startup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "dist\\LCMS-Analysis\\LCMS-Analysis.exe"
+          $out = "app_stdout.log"
+          $err = "app_stderr.log"
+          $proc = Start-Process -FilePath $exe -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8501/_stcore/health" -UseBasicParsing -TimeoutSec 2
+                if ($resp.StatusCode -eq 200) {
+                  $healthy = $true
+                  break
+                }
+              } catch { }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $healthy) {
+              Write-Host "Health check failed"
+              if (Test-Path $out) { Get-Content $out -Tail 200 }
+              if (Test-Path $err) { Get-Content $err -Tail 200 }
+              throw "App did not become healthy"
+            }
+            Write-Host "Health check passed"
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force
+            }
+          }
+
       - name: Create ZIP (macOS)
         if: runner.os == 'macOS'
         run: |
