@@ -770,6 +770,55 @@ def _run_default_deconvolution(mz: np.ndarray, intensity: np.ndarray) -> list[di
     return results
 
 
+def _is_likely_half_mass_alias(component: dict, all_results: list[dict], ratio_tol: float = 0.01) -> bool:
+    """Detect likely M/2 harmonic aliases for display filtering."""
+    charge_states = component.get("charge_states", [])
+    if not charge_states:
+        return False
+
+    if int(component.get("num_charges", 0)) > 3:
+        return False
+    if max(charge_states) > 6:
+        return False
+
+    mass = float(component.get("mass", 0.0))
+    if mass <= 0:
+        return False
+
+    for other in all_results:
+        if other is component:
+            continue
+        other_mass = float(other.get("mass", 0.0))
+        if other_mass <= mass:
+            continue
+        if abs((other_mass / mass) - 2.0) <= ratio_tol:
+            return True
+    return False
+
+
+def _filter_display_deconvolution_results(
+    results: list[dict],
+    *,
+    expert_mode: bool,
+    min_rel_intensity: float = 0.05,
+) -> list[dict]:
+    """Apply display-only filtering for non-expert deconvolution views."""
+    if not results:
+        return []
+
+    ordered = sorted(results, key=lambda r: float(r.get("intensity", 0.0)), reverse=True)
+    top_intensity = float(ordered[0].get("intensity", 0.0))
+    if top_intensity <= 0:
+        return ordered
+
+    filtered = [r for r in ordered if float(r.get("intensity", 0.0)) >= min_rel_intensity * top_intensity]
+    if expert_mode:
+        return filtered
+
+    # Non-expert mode: hide likely harmonic aliases that can outrank true species.
+    return [r for r in filtered if not _is_likely_half_mass_alias(r, ordered)]
+
+
 def render_text_table(rows: list[dict], columns: list[str], max_lines: int = 0) -> None:
     """Render a simple ASCII table to avoid pyarrow dependency.
 
@@ -2382,15 +2431,15 @@ def deconvolution_analysis(sample, settings):
 
         st.divider()
 
-        # In non-expert mode, filter to components >= 5% relative intensity
-        # to suppress low-confidence artifacts. Expert mode shows all.
-        if not expert_mode and results:
-            top_intensity = results[0]['intensity']
-            significant_results = [r for r in results if r['intensity'] >= 0.05 * top_intensity]
+        significant_results = _filter_display_deconvolution_results(
+            results,
+            expert_mode=expert_mode,
+            min_rel_intensity=0.05,
+        )
+        if not expert_mode:
             st.subheader(f"Results ({len(significant_results)} components, ≥5% rel. intensity)")
         else:
-            significant_results = results
-            st.subheader(f"Results ({len(results)} masses detected)")
+            st.subheader(f"Results ({len(significant_results)} masses detected)")
 
         # Limit results to top N
         display_results = significant_results[:top_n_masses]
@@ -2644,10 +2693,11 @@ def batch_deconvolution_analysis(samples: list, settings):
             st.info("No masses detected for this sample.")
             continue
 
-        # Filter to >= 5% relative intensity (batch always uses non-expert view)
-        if results:
-            top_intensity = results[0]['intensity']
-            results = [r for r in results if r['intensity'] >= 0.05 * top_intensity]
+        results = _filter_display_deconvolution_results(
+            results,
+            expert_mode=False,
+            min_rel_intensity=0.05,
+        )
 
         display_results = results[:top_n_masses]
         fig = create_deconvoluted_masses_figure(sample.name, display_results, style)
