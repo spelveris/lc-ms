@@ -19,7 +19,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Read app version
         id: app_version
         shell: bash
@@ -27,17 +27,27 @@ jobs:
           VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building app version: $VERSION"
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
-      
+
+      - name: Clean AppleDouble files from site-packages
+        run: |
+          python -c "
+          import site, pathlib
+          for sp in site.getsitepackages():
+              for f in pathlib.Path(sp).rglob('._*'):
+                  print(f'Removing: {f}')
+                  f.unlink()
+          "
+
       - name: Build macOS app
         run: |
           pyinstaller \
@@ -65,18 +75,27 @@ jobs:
             --exclude-module=jupyter \
             --exclude-module=notebook \
             --exclude-module=pytest \
+            --exclude-module=tkinter \
+            --exclude-module=_tkinter \
+            --exclude-module=numpy.tests \
+            --exclude-module=scipy.tests \
+            --exclude-module=matplotlib.tests \
+            --exclude-module=pandas.tests \
+            --exclude-module=doctest \
+            --exclude-module=pydoc \
+            --exclude-module=unittest \
             --noconfirm \
             launcher.py
 
-      - name: Remove AppleDouble files (macOS)
+      - name: Remove AppleDouble files from dist
         run: |
           find dist/LCMS-Analysis -name '._*' -delete
-      
+
       - name: Create ZIP
         run: |
           cd dist
           zip -r LCMS-Analysis-v${{ steps.app_version.outputs.version }}-macOS.zip LCMS-Analysis
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -88,7 +107,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Read app version
         id: app_version
         shell: bash
@@ -96,17 +115,27 @@ jobs:
           VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building app version: $VERSION"
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
-      
+
+      - name: Clean AppleDouble files from site-packages
+        run: |
+          python -c "
+          import site, pathlib
+          for sp in site.getsitepackages():
+              for f in pathlib.Path(sp).rglob('._*'):
+                  print(f'Removing: {f}')
+                  f.unlink()
+          "
+
       - name: Build Windows app
         run: |
           pyinstaller `
@@ -134,16 +163,30 @@ jobs:
             --exclude-module=jupyter `
             --exclude-module=notebook `
             --exclude-module=pytest `
+            --exclude-module=tkinter `
+            --exclude-module=_tkinter `
+            --exclude-module=numpy.tests `
+            --exclude-module=scipy.tests `
+            --exclude-module=matplotlib.tests `
+            --exclude-module=pandas.tests `
+            --exclude-module=doctest `
+            --exclude-module=pydoc `
+            --exclude-module=unittest `
             --noconfirm `
             launcher.py
 
-      - name: Remove AppleDouble files (Windows)
+      - name: Remove AppleDouble files from dist
+        shell: python
         run: |
-          Get-ChildItem -Path dist\LCMS-Analysis -Recurse -Force -Filter '._*' | Remove-Item -Force
-      
+          import pathlib
+          dist = pathlib.Path("dist/LCMS-Analysis")
+          for f in dist.rglob("._*"):
+              print(f"Removing: {f}")
+              f.unlink()
+
       - name: Create ZIP
         run: Compress-Archive -Path dist\LCMS-Analysis -DestinationPath dist\LCMS-Analysis-v${{ steps.app_version.outputs.version }}-Windows.zip
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

@@ -47,6 +47,15 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Clean AppleDouble files from site-packages
+        shell: python
+        run: |
+          import site, pathlib
+          for sp in site.getsitepackages():
+              for f in pathlib.Path(sp).rglob("._*"):
+                  print(f"Removing: {f}")
+                  f.unlink()
+
       - name: Build macOS app
         if: runner.os == 'macOS'
         run: |
@@ -75,6 +84,15 @@ jobs:
             --exclude-module=jupyter \
             --exclude-module=notebook \
             --exclude-module=pytest \
+            --exclude-module=tkinter \
+            --exclude-module=_tkinter \
+            --exclude-module=numpy.tests \
+            --exclude-module=scipy.tests \
+            --exclude-module=matplotlib.tests \
+            --exclude-module=pandas.tests \
+            --exclude-module=doctest \
+            --exclude-module=pydoc \
+            --exclude-module=unittest \
             --noconfirm \
             launcher.py
 
@@ -106,18 +124,26 @@ jobs:
             --exclude-module=jupyter `
             --exclude-module=notebook `
             --exclude-module=pytest `
+            --exclude-module=tkinter `
+            --exclude-module=_tkinter `
+            --exclude-module=numpy.tests `
+            --exclude-module=scipy.tests `
+            --exclude-module=matplotlib.tests `
+            --exclude-module=pandas.tests `
+            --exclude-module=doctest `
+            --exclude-module=pydoc `
+            --exclude-module=unittest `
             --noconfirm `
             launcher.py
 
-      - name: Remove AppleDouble files (macOS)
-        if: runner.os == 'macOS'
+      - name: Remove AppleDouble files from dist
+        shell: python
         run: |
-          find dist/LCMS-Analysis -name '._*' -delete
-
-      - name: Remove AppleDouble files (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          Get-ChildItem -Path dist\LCMS-Analysis -Recurse -Force -Filter '._*' | Remove-Item -Force
+          import pathlib
+          dist = pathlib.Path("dist/LCMS-Analysis")
+          for f in dist.rglob("._*"):
+              print(f"Removing: {f}")
+              f.unlink()
 
       - name: Create ZIP (macOS)
         if: runner.os == 'macOS'
