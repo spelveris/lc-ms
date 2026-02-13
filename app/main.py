@@ -1109,6 +1109,10 @@ def sidebar_settings():
         panel_title_tic = st.text_input("TIC panel", value="Total Ion Chromatogram (TIC)")
         panel_title_eic = st.text_input("EIC panel", value="EIC m/z {mz} (±{window})", help="Use {mz} and {window}")
 
+        st.caption("Deconvoluted masses figure:")
+        deconv_show_title = st.checkbox("Show title", value=True, key="deconv_show_title")
+        deconv_show_subtitle = st.checkbox("Show sample name", value=True, key="deconv_show_subtitle")
+
     # Ionization mode
     ion_mode = st.sidebar.radio(
         "Ionization Mode",
@@ -1219,6 +1223,8 @@ def sidebar_settings():
         'show_grid': show_grid,
         'deconv_x_min_da': deconv_x_min_da,
         'deconv_x_max_da': deconv_x_max_da,
+        'deconv_show_title': deconv_show_title,
+        'deconv_show_subtitle': deconv_show_subtitle,
         'y_scale': 'linear',
         'colors': {
             'initial': color_initial,
@@ -2405,6 +2411,8 @@ def deconvolution_analysis(sample, settings):
             'top_n_masses': top_n_masses,
             'deconv_x_min_da': settings['deconv_x_min_da'],
             'deconv_x_max_da': settings['deconv_x_max_da'],
+            'deconv_show_title': settings['deconv_show_title'],
+            'deconv_show_subtitle': settings['deconv_show_subtitle'],
             'deconv_show_obs_calc': show_obs_calc,
             'deconv_calc_mass_da': calc_mass_da,
         }
@@ -2598,6 +2606,8 @@ def batch_deconvolution_analysis(samples: list, settings):
         'top_n_masses': top_n_masses,
         'deconv_x_min_da': settings['deconv_x_min_da'],
         'deconv_x_max_da': settings['deconv_x_max_da'],
+        'deconv_show_title': settings['deconv_show_title'],
+        'deconv_show_subtitle': settings['deconv_show_subtitle'],
         'deconv_show_obs_calc': True,
         'deconv_calc_mass_da': None,
     }
@@ -3210,6 +3220,8 @@ def mass_calculator_tab(sample_list: list, settings):
         'show_grid': False,
         'deconv_x_min_da': settings['deconv_x_min_da'],
         'deconv_x_max_da': settings['deconv_x_max_da'],
+        'deconv_show_title': settings['deconv_show_title'],
+        'deconv_show_subtitle': settings['deconv_show_subtitle'],
         'deconv_show_obs_calc': True,
         'deconv_calc_mass_da': theoretical_masses if len(theoretical_masses) > 1 else theoretical_mass,
     }
@@ -3242,6 +3254,8 @@ def mass_calculator_tab(sample_list: list, settings):
         'show_grid': False,
         'deconv_x_min_da': settings['deconv_x_min_da'],
         'deconv_x_max_da': settings['deconv_x_max_da'],
+        'deconv_show_title': settings['deconv_show_title'],
+        'deconv_show_subtitle': settings['deconv_show_subtitle'],
         'deconv_show_obs_calc': True,
         'deconv_calc_mass_da': theoretical_masses if len(theoretical_masses) > 1 else theoretical_mass,
         'deconv_show_peak_labels': False,
@@ -3330,7 +3344,7 @@ def report_export_tab(sample_list: list, settings):
                 # Page 1: Info + results table (already A4)
                 params = {
                     'Mass range': '500 – 50,000 Da',
-                    'Charge range': '5 – 50',
+                    'Charge range': '1 – 50',
                     'Noise cutoff': '1,000 counts',
                 }
                 fig_info = create_report_info_page(

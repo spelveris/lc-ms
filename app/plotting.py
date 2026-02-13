@@ -783,6 +783,7 @@ def _plot_deconvoluted_masses_panel(
     x_min_da: float = 1000.0,
     x_max_da: float = 50000.0,
     subtitle: Optional[str] = None,
+    show_title: bool = True,
     show_obs_calc: bool = False,
     calc_mass_da=None,
     show_peak_labels: bool = True,
@@ -1033,11 +1034,13 @@ def _plot_deconvoluted_masses_panel(
 
         ax_deconv.set_xlabel("Mass (kDa)")
         ax_deconv.set_ylabel("Relative Intensity (%)")
-        title_y = 1.08 if subtitle else 1.03
-        ax_deconv.set_title("Deconvoluted Masses", fontweight='bold', y=title_y)
+        if show_title:
+            title_y = 1.08 if subtitle else 1.03
+            ax_deconv.set_title("Deconvoluted Masses", fontweight='bold', y=title_y)
         if subtitle:
+            sub_y = 1.02 if show_title else 1.03
             ax_deconv.text(
-                0.5, 1.02, subtitle,
+                0.5, sub_y, subtitle,
                 transform=ax_deconv.transAxes,
                 ha='center', va='bottom',
                 fontsize=7, fontweight='normal'
@@ -1050,11 +1053,13 @@ def _plot_deconvoluted_masses_panel(
         ax_deconv.spines['right'].set_visible(False)
     else:
         ax_deconv.text(0.5, 0.5, "No masses detected", ha='center', va='center', transform=ax_deconv.transAxes)
-        title_y = 1.08 if subtitle else 1.03
-        ax_deconv.set_title("Deconvoluted Masses", fontweight='bold', y=title_y)
+        if show_title:
+            title_y = 1.08 if subtitle else 1.03
+            ax_deconv.set_title("Deconvoluted Masses", fontweight='bold', y=title_y)
         if subtitle:
+            sub_y = 1.02 if show_title else 1.03
             ax_deconv.text(
-                0.5, 1.02, subtitle,
+                0.5, sub_y, subtitle,
                 transform=ax_deconv.transAxes,
                 ha='center', va='bottom',
                 fontsize=7, fontweight='normal'
@@ -1203,7 +1208,9 @@ def create_deconvoluted_masses_figure(
     deconv_show_obs_calc = style.get('deconv_show_obs_calc', False)
     deconv_calc_mass_da = style.get('deconv_calc_mass_da')
     deconv_show_peak_labels = style.get('deconv_show_peak_labels', True)
-    sample_subtitle = sample_name[:-2] if sample_name.lower().endswith(".d") else sample_name
+    deconv_show_title = style.get('deconv_show_title', True)
+    deconv_show_subtitle = style.get('deconv_show_subtitle', True)
+    sample_subtitle = (sample_name[:-2] if sample_name.lower().endswith(".d") else sample_name) if deconv_show_subtitle else None
 
     # Match the physical panel size used by create_deconvolution_figure()
     # for the bottom-right deconvoluted-masses subplot.
@@ -1231,6 +1238,7 @@ def create_deconvoluted_masses_figure(
         x_min_da=deconv_x_min_da,
         x_max_da=deconv_x_max_da,
         subtitle=sample_subtitle,
+        show_title=deconv_show_title,
         show_obs_calc=deconv_show_obs_calc,
         calc_mass_da=deconv_calc_mass_da,
         show_peak_labels=deconv_show_peak_labels,
