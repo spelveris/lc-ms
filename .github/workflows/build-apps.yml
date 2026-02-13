@@ -90,7 +90,6 @@ jobs:
             --exclude-module=scipy.tests \
             --exclude-module=matplotlib.tests \
             --exclude-module=pandas.tests \
-            --exclude-module=pydoc \
             --noconfirm \
             launcher.py
 
@@ -128,7 +127,6 @@ jobs:
             --exclude-module=scipy.tests `
             --exclude-module=matplotlib.tests `
             --exclude-module=pandas.tests `
-            --exclude-module=pydoc `
             --noconfirm `
             launcher.py
 
