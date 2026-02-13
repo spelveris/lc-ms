@@ -94,8 +94,16 @@ _loading_placeholder.markdown(LOADING_OVERLAY, unsafe_allow_html=True)
 def _init_heavy_modules():
     """Initialize heavy modules once per process."""
     import numpy
-    import matplotlib.pyplot as plt
+    # Clean macOS AppleDouble files (._*) from matplotlib's stylelib before
+    # pyplot imports style.core — these break Windows builds with UnicodeDecodeError.
     import matplotlib
+    _stylelib = Path(matplotlib.get_data_path()) / 'stylelib'
+    for _f in _stylelib.glob('._*'):
+        try:
+            _f.unlink()
+        except OSError:
+            pass
+    import matplotlib.pyplot as plt
     # Pre-configure matplotlib
     matplotlib.use('Agg')
     plt.rcParams.update({
