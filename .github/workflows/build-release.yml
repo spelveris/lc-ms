@@ -24,7 +24,7 @@ jobs:
         id: app_version
         shell: bash
         run: |
-          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\s*=\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building app version: $VERSION"
 
@@ -132,7 +132,7 @@ jobs:
         id: app_version
         shell: bash
         run: |
-          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\s*=\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building app version: $VERSION"
 
@@ -257,7 +257,7 @@ jobs:
         id: app_version
         shell: bash
         run: |
-          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\\s*=\\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
+          VERSION=$(python -c 'import pathlib,re; text = pathlib.Path("app/config.py").read_text(); m = re.search(r"APP_VERSION\s*=\s*\"([^\"]+)\"", text); print(m.group(1) if m else "0.0.0")')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing app version: $VERSION"
 
