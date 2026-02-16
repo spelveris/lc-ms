@@ -4,6 +4,7 @@ import sys
 import os
 import time
 import threading
+import re
 
 class LoadingSpinner:
     """Display a colorful spinning animation with timer during loading."""
@@ -61,6 +62,20 @@ class LoadingSpinner:
         timer = f"{self.GREEN}{elapsed:.1f}s{self.RESET}"
         print(f"\r  {check} {self.message}  {timer}    ")
 
+
+def _read_app_version(base_path: str) -> str:
+    """Read APP_VERSION from app/config.py without importing Streamlit modules."""
+    config_path = os.path.join(base_path, "app", "config.py")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+        if match:
+            return match.group(1)
+    except OSError:
+        pass
+    return "unknown"
+
 # Required for PyInstaller multiprocessing
 if __name__ == "__main__":
     import multiprocessing
@@ -86,7 +101,7 @@ if __name__ == "__main__":
 
     print()
     print(f"  {BOLD}{CYAN}LC-MS Analysis{RESET}")
-    print(f"  {DIM}v1.0{RESET}")
+    print(f"  {DIM}v{_read_app_version(base_path)}{RESET}")
     print()
 
     # Create loading HTML page that shows immediately and redirects when ready
