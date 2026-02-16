@@ -876,6 +876,7 @@ def deconvolute_protein_local_lcms_machine_like(
     # This avoids redundant calculations in the inner loop
     peak_mzs = np.array([p['mz'] for p in peaks])
     peak_ints = np.array([p['intensity'] for p in peaks])
+    peak_indices = np.array([p['index'] for p in peaks])
     charges = np.arange(min_charge, max_charge + 1)
 
     # Pre-compute mass matrix: masses[i, j] = mass of peak i at charge j
@@ -904,42 +905,31 @@ def deconvolute_protein_local_lcms_machine_like(
             ions = []
             ion_indices = set()
 
-            # OPTIMIZATION: Vectorized abundance filter
+            # Vectorized: compute mass errors for ALL peaks × ALL charges at once
             intensity_mask = peak_ints >= max(noise_cutoff, anchor_int * abundance_cutoff)
+            all_errors = np.abs(masses_matrix - M0) / M0  # (P, Z)
+            all_errors[~intensity_mask] = np.inf
+            best_z_idx = np.argmin(all_errors, axis=1)  # (P,)
+            min_errors = all_errors[np.arange(len(peaks)), best_z_idx]  # (P,)
+            matched_mask = min_errors <= mw_agreement
+            matched_pidxs = np.where(matched_mask)[0]
 
-            for p_idx, p in enumerate(peaks):
-                if not intensity_mask[p_idx]:
-                    continue
+            if use_mz_agreement:
+                best_zs = charges[best_z_idx[matched_pidxs]]
+                mz_preds = (M0 + best_zs * PROTON_MASS) / best_zs
+                mz_errs = np.abs(peak_mzs[matched_pidxs] - mz_preds) / mz_preds
+                matched_pidxs = matched_pidxs[mz_errs <= mw_agreement]
 
-                # OPTIMIZATION: Vectorized mass matching
-                # Check all charges at once for this peak
-                peak_masses = masses_matrix[p_idx]  # All masses for this peak
-                mass_errors = np.abs(peak_masses - M0) / M0
-
-                # Find charges within tolerance
-                matching = mass_errors <= mw_agreement
-                if not np.any(matching):
-                    continue
-
-                # Get best matching charge (smallest error)
-                matching_indices = np.where(matching)[0]
-                best_idx = matching_indices[np.argmin(mass_errors[matching_indices])]
-                best_z = charges[best_idx]
-                best_mass = peak_masses[best_idx]
-
-                if use_mz_agreement:
-                    mz_pred = (M0 + best_z * PROTON_MASS) / best_z
-                    if abs(p['mz'] - mz_pred) / mz_pred > mw_agreement:
-                        continue
-
+            for p_idx in matched_pidxs:
+                bz = best_z_idx[p_idx]
                 ions.append({
-                    'mz': p['mz'],
-                    'intensity': p['intensity'],
-                    'charge': int(best_z),
-                    'mass': float(best_mass),
-                    'index': p['index']
+                    'mz': float(peak_mzs[p_idx]),
+                    'intensity': float(peak_ints[p_idx]),
+                    'charge': int(charges[bz]),
+                    'mass': float(masses_matrix[p_idx, bz]),
+                    'index': int(peak_indices[p_idx])
                 })
-                ion_indices.add(p['index'])
+                ion_indices.add(int(peak_indices[p_idx]))
 
             if len(ions) < min_peaks:
                 continue
@@ -1093,6 +1083,7 @@ def deconvolute_protein_local_lcms_machine_like(
         max_residual_anchors = min(15, len(residual_peaks))
         residual_peak_mzs = np.array([p['mz'] for p in residual_peaks])
         residual_peak_ints = np.array([p['intensity'] for p in residual_peaks])
+        residual_peak_indices = np.array([p['index'] for p in residual_peaks])
         residual_masses_matrix = np.outer(residual_peak_mzs - PROTON_MASS, charges)
 
         residual_candidates = []
@@ -1110,24 +1101,22 @@ def deconvolute_protein_local_lcms_machine_like(
                 ions = []
                 ion_indices_r = set()
                 intensity_mask = residual_peak_ints >= max(noise_cutoff, anchor_int * abundance_cutoff)
+                all_errors_r = np.abs(residual_masses_matrix - M0) / M0
+                all_errors_r[~intensity_mask] = np.inf
+                best_z_idx_r = np.argmin(all_errors_r, axis=1)
+                min_errors_r = all_errors_r[np.arange(len(residual_peaks)), best_z_idx_r]
+                matched_pidxs_r = np.where(min_errors_r <= mw_agreement)[0]
 
-                for p_idx, p in enumerate(residual_peaks):
-                    if not intensity_mask[p_idx]:
-                        continue
-                    peak_masses = residual_masses_matrix[p_idx]
-                    mass_errors = np.abs(peak_masses - M0) / M0
-                    matching = mass_errors <= mw_agreement
-                    if not np.any(matching):
-                        continue
-                    matching_indices = np.where(matching)[0]
-                    best_idx = matching_indices[np.argmin(mass_errors[matching_indices])]
-                    best_z = charges[best_idx]
-                    best_mass = peak_masses[best_idx]
+                for p_idx in matched_pidxs_r:
+                    bz = best_z_idx_r[p_idx]
                     ions.append({
-                        'mz': p['mz'], 'intensity': p['intensity'],
-                        'charge': int(best_z), 'mass': float(best_mass), 'index': p['index']
+                        'mz': float(residual_peak_mzs[p_idx]),
+                        'intensity': float(residual_peak_ints[p_idx]),
+                        'charge': int(charges[bz]),
+                        'mass': float(residual_masses_matrix[p_idx, bz]),
+                        'index': int(residual_peak_indices[p_idx])
                     })
-                    ion_indices_r.add(p['index'])
+                    ion_indices_r.add(int(residual_peak_indices[p_idx]))
 
                 if len(ions) < min_peaks:
                     continue
