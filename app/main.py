@@ -2648,6 +2648,63 @@ def batch_deconvolution_analysis(samples: list, settings):
         st.info("No valid samples available for batch deconvolution.")
         return
 
+    # ── Run / Re-run gate ──────────────────────────────────────────────
+    # Deconvolution only runs when the user clicks the button.  Cached
+    # results persist across Streamlit reruns (slider changes etc.).
+    sample_key = tuple(s.source_path for s in valid_samples)
+    cache_key = (sample_key, config.APP_VERSION)
+
+    need_run = (
+        st.session_state.get('batch_cache_key') != cache_key
+        or 'batch_results' not in st.session_state
+    )
+
+    col_btn, col_info = st.columns([1, 3])
+    with col_btn:
+        run_clicked = st.button(
+            "Re-run" if not need_run else "Run Batch Deconvolution",
+            key="batch_run_btn",
+            type="primary" if need_run else "secondary",
+        )
+    with col_info:
+        if not need_run:
+            n_cached = len(st.session_state['batch_results'])
+            st.caption(f"Cached results for {n_cached} sample(s). Adjust display settings freely.")
+
+    if run_clicked or need_run and 'batch_results' not in st.session_state:
+        # Run deconvolution for all samples
+        batch_results = []
+        progress = st.progress(0, text="Running batch deconvolution...")
+        for i, sample in enumerate(valid_samples):
+            progress.progress(
+                (i + 1) / len(valid_samples),
+                text=f"Deconvolving {sample.name} ({i + 1}/{len(valid_samples)})..."
+            )
+            start_time, end_time = _detect_deconvolution_window(sample)
+            mz, intensity = sum_spectra_in_range(sample, start_time, end_time)
+            if len(mz) == 0:
+                batch_results.append((sample, None, start_time, end_time))
+                continue
+            results = _run_default_deconvolution(mz, intensity)
+            if results:
+                results = _filter_display_deconvolution_results(
+                    results, expert_mode=False, min_rel_intensity=0.05,
+                )
+            batch_results.append((sample, results, start_time, end_time))
+        progress.empty()
+
+        st.session_state['batch_cache_key'] = cache_key
+        st.session_state['batch_results'] = batch_results
+        st.session_state.pop('batch_exports', None)  # invalidate export cache
+        st.rerun()
+
+    if 'batch_results' not in st.session_state:
+        st.info("Click **Run Batch Deconvolution** to start.")
+        return
+
+    # ── Display settings (changes here do NOT re-deconvolve) ───────────
+    batch_results = st.session_state['batch_results']
+
     top_n_masses = st.slider(
         "Show top N masses",
         min_value=1,
@@ -2676,65 +2733,72 @@ def batch_deconvolution_analysis(samples: list, settings):
         except ValueError:
             style['deconv_calc_mass_da'] = None
 
-    for idx, sample in enumerate(valid_samples):
+    # Build a display-settings key to detect when exports need regenerating
+    display_key = (top_n_masses, settings['fig_width'], settings['show_grid'],
+                   settings['deconv_x_min_da'], settings['deconv_x_max_da'],
+                   settings['deconv_show_title'], settings['deconv_show_subtitle'],
+                   style.get('deconv_calc_mass_da'), settings['export_dpi'])
+    exports_valid = (
+        st.session_state.get('batch_export_display_key') == display_key
+        and 'batch_exports' in st.session_state
+    )
+
+    # ── Render cached results ──────────────────────────────────────────
+    for idx, (sample, results, start_time, end_time) in enumerate(batch_results):
         sample_title = sample.name[:-2] if sample.name.lower().endswith(".d") else sample.name
         st.subheader(f"{idx + 1}. {sample_title}")
-
-        start_time, end_time = _detect_deconvolution_window(sample)
         st.caption(f"Auto window: {start_time:.2f} - {end_time:.2f} min")
 
-        mz, intensity = sum_spectra_in_range(sample, start_time, end_time)
-        if len(mz) == 0:
-            st.warning("No mass spectrum data found in the selected region.")
-            continue
-
-        results = _run_default_deconvolution(mz, intensity)
-        if not results:
+        if results is None or len(results) == 0:
             st.info("No masses detected for this sample.")
             continue
-
-        results = _filter_display_deconvolution_results(
-            results,
-            expert_mode=False,
-            min_rel_intensity=0.05,
-        )
 
         display_results = results[:top_n_masses]
         fig = create_deconvoluted_masses_figure(sample.name, display_results, style)
         st.pyplot(fig, use_container_width=True)
 
+        # Lazy export: generate bytes only once per display-settings change
         export_key_base = f"{idx}_{sample.name}".replace(" ", "_").replace(".", "_")
+        if not exports_valid or export_key_base not in st.session_state.get('batch_exports', {}):
+            if 'batch_exports' not in st.session_state or not exports_valid:
+                st.session_state['batch_exports'] = {}
+                st.session_state['batch_export_display_key'] = display_key
+                exports_valid = True
+            st.session_state['batch_exports'][export_key_base] = {
+                'png': export_figure(fig, dpi=settings['export_dpi']),
+                'svg': export_figure_svg(fig),
+                'pdf': export_figure_pdf(fig, dpi=settings['export_dpi']),
+            }
+        cached_exports = st.session_state['batch_exports'][export_key_base]
+
         col1, col2, col3 = st.columns(3)
         with col1:
-            png_data = export_figure(fig, dpi=settings['export_dpi'])
             st.download_button(
                 label="Download PNG",
-                data=png_data,
+                data=cached_exports['png'],
                 file_name=f"{sample.name}_batch_deconvoluted_masses.png",
                 mime="image/png",
                 key=f"batch_deconv_png_{export_key_base}"
             )
         with col2:
-            svg_data = export_figure_svg(fig)
             st.download_button(
                 label="Download SVG",
-                data=svg_data,
+                data=cached_exports['svg'],
                 file_name=f"{sample.name}_batch_deconvoluted_masses.svg",
                 mime="image/svg+xml",
                 key=f"batch_deconv_svg_{export_key_base}"
             )
         with col3:
-            pdf_data = export_figure_pdf(fig, dpi=settings['export_dpi'])
             st.download_button(
                 label="Download PDF",
-                data=pdf_data,
+                data=cached_exports['pdf'],
                 file_name=f"{sample.name}_batch_deconvoluted_masses.pdf",
                 mime="application/pdf",
                 key=f"batch_deconv_pdf_{export_key_base}"
             )
 
         plt.close(fig)
-        if idx < len(valid_samples) - 1:
+        if idx < len(batch_results) - 1:
             st.divider()
 
 
