@@ -2651,7 +2651,7 @@ def batch_deconvolution_analysis(samples: list, settings):
     # ── Run / Re-run gate ──────────────────────────────────────────────
     # Deconvolution only runs when the user clicks the button.  Cached
     # results persist across Streamlit reruns (slider changes etc.).
-    sample_key = tuple(s.source_path for s in valid_samples)
+    sample_key = tuple(s.folder_path for s in valid_samples)
     cache_key = (sample_key, config.APP_VERSION)
 
     need_run = (
